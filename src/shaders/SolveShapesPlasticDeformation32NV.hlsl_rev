@@ -1,0 +1,6 @@
+#include "SolveShapesPlasticDeformationNV.hlsl_rev"
+
+[numthreads(32, 1, 1)]
+void SolveShapesPlasticDeformation32NV(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
+    SolveShapesPlasticDeformationNVBody(rigid, threadIdx);
+}

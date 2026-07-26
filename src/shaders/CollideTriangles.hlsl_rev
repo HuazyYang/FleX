@@ -1,0 +1,339 @@
+#include "KernelParams.hlsli"
+
+#define BLOCK_DIM_X 256
+#define BVH_STACK_SIZE 40
+#define BVH_OVERFLOW_SIZE 24
+#define MAX_TRIANGLE_SHAPES 8
+
+struct PackedNodeHalf {
+    float3 v;
+    uint ib;
+};
+
+StructuredBuffer<float4> triangleVerticesArray : register(t0);
+StructuredBuffer<int> triangleIndicesArray : register(t1);
+StructuredBuffer<PackedNodeHalf> bvhNodeLowersArray : register(t2);
+StructuredBuffer<PackedNodeHalf> bvhNodeUppersArray : register(t3);
+StructuredBuffer<int> bvhRootNodeArray : register(t4);
+StructuredBuffer<float4> sortedPositions : register(t5);
+StructuredBuffer<float4> sortedNewPositions : register(t6);
+StructuredBuffer<int> sortedPhases : register(t7);
+StructuredBuffer<float4> shapePrevPositions : register(t8);
+StructuredBuffer<float4> shapePrevRotations : register(t9);
+StructuredBuffer<int> shapeFlags : register(t10);
+StructuredBuffer<float4> shapePositions : register(t11);
+StructuredBuffer<float4> shapeRotations : register(t12);
+StructuredBuffer<float4> shapeGeometry : register(t13);
+StructuredBuffer<int> shapeBvhRootNode : register(t14);
+StructuredBuffer<PackedNodeHalf> shapeBvhNodeLowers : register(t15);
+StructuredBuffer<PackedNodeHalf> shapeBvhNodeUppers : register(t16);
+StructuredBuffer<FlexTriangleMeshDevice> meshOffsets : register(t17);
+
+RWStructuredBuffer<int> collisionCounts : register(u0);
+RWStructuredBuffer<float4> collisionPlanes : register(u1);
+RWStructuredBuffer<float4> collisionVelocities : register(u2);
+
+groupshared int triangleShapeCandidates[BLOCK_DIM_X * MAX_TRIANGLE_SHAPES];
+groupshared int stackOverflow[BLOCK_DIM_X][BVH_OVERFLOW_SIZE];
+
+float3 Rotate(float4 q, float3 v) {
+    return v + 2.0f * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+float3 RotateInv(float4 q, float3 v) {
+    return v + 2.0f * cross(q.xyz, cross(q.xyz, v) - q.w * v);
+}
+
+float4 NormalizeQuat(float4 q) {
+    return q * rsqrt(dot(q, q));
+}
+
+bool OverlapAabb(float3 lowerA, float3 upperA, float3 lowerB, float3 upperB) {
+    return all(upperA >= lowerB) && all(upperB >= lowerA);
+}
+
+float3 ClosestPointOnTriangle(float3 p, float3 a, float3 b, float3 c) {
+    float3 ab = b - a;
+    float3 ac = c - a;
+    float3 ap = p - a;
+    float d1 = dot(ab, ap);
+    float d2 = dot(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f)
+        return a;
+
+    float3 bp = p - b;
+    float d3 = dot(ab, bp);
+    float d4 = dot(ac, bp);
+    if (d3 >= 0.0f && d3 >= d4)
+        return b;
+
+    float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        float v = d1 / (d1 - d3);
+        return a + v * ab;
+    }
+
+    float3 cp = p - c;
+    float d5 = dot(ab, cp);
+    float d6 = dot(ac, cp);
+    if (d6 >= 0.0f && d6 >= d5)
+        return c;
+
+    float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        float w = d2 / (d2 - d6);
+        return a + w * ac;
+    }
+
+    float va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+        float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return b + w * (c - b);
+    }
+
+    float invDenom = 1.0f / (va + vb + vc);
+    float v = vb * invDenom;
+    float w = vc * invDenom;
+    return a + ab * v + ac * w;
+}
+
+bool SegmentIntersectsTriangle(float3 start, float3 end, float3 a, float3 b, float3 c) {
+    float3 d = end - start;
+    float3 av = a - start;
+    float3 bv = b - start;
+    float3 cv = c - start;
+    float3 n0 = cross(cv, d);
+    bool s0 = dot(bv, n0) >= 0.0f;
+    bool s1 = -dot(av, n0) >= 0.0f;
+    float3 n1 = cross(d, bv);
+    bool s2 = dot(n1, av) >= 0.0f;
+    return s0 && s1 && s2;
+}
+
+void StoreTriangleContact(
+    int particle,
+    inout int count,
+    int shape,
+    int maxContacts,
+    float3 shapeEnd,
+    float4 qEnd,
+    float4 velocity,
+    float3 localNormal,
+    float localPlaneW) {
+    if (count < maxContacts) {
+        int contactIndex = particle * maxContacts + count;
+        float3 normal = Rotate(qEnd, localNormal);
+        float planeW = -(dot(normal, shapeEnd) + localPlaneW);
+        collisionPlanes[contactIndex] = float4(normal, planeW);
+        collisionVelocities[contactIndex] = velocity;
+        count++;
+    }
+}
+
+void TraverseShapeBvh(
+    int particle,
+    int localIdx,
+    float3 particleStart,
+    float3 particleEnd,
+    out int numTriangleShapes) {
+    int stack[BVH_STACK_SIZE];
+    uint particleChannels = uint(sortedPhases[particle]) & 0xff000000u;
+    float3 queryLower = min(particleStart, particleEnd) - gParams.kCollisionMargin.xxx;
+    float3 queryUpper = max(particleStart, particleEnd) + gParams.kCollisionMargin.xxx;
+    int candidateBase = localIdx * MAX_TRIANGLE_SHAPES;
+    int stackSize = 1;
+
+    stack[0] = shapeBvhRootNode[0];
+    numTriangleShapes = 0;
+
+    while (stackSize > 0) {
+        stackSize--;
+        int node;
+        if (stackSize >= BVH_STACK_SIZE) {
+            node = stackOverflow[localIdx][stackSize - BVH_STACK_SIZE];
+        } else {
+            node = stack[stackSize];
+        }
+
+        PackedNodeHalf lowerNode = shapeBvhNodeLowers[node];
+        PackedNodeHalf upperNode = shapeBvhNodeUppers[node];
+
+        if (!OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v))
+            continue;
+
+        uint lowerBits = lowerNode.ib & 0x7fffffffu;
+        if ((lowerNode.ib & 0x80000000u) != 0) {
+            int flags = shapeFlags[lowerBits];
+            if (((uint(flags) & particleChannels) != 0) &&
+                ((uint(flags) & 7u) == eNvFlexShapeTriangleMesh) &&
+                numTriangleShapes < MAX_TRIANGLE_SHAPES) {
+                triangleShapeCandidates[candidateBase + numTriangleShapes] = int(lowerBits);
+                numTriangleShapes++;
+            }
+        } else {
+            int upperBits = int(upperNode.ib & 0x7fffffffu);
+            int nextSize;
+            if (stackSize >= BVH_STACK_SIZE) {
+                nextSize = stackSize + 1;
+                stackOverflow[localIdx][stackSize - BVH_STACK_SIZE] = int(lowerBits);
+            } else {
+                nextSize = stackSize + 1;
+                stack[stackSize] = int(lowerBits);
+            }
+
+            if (nextSize >= BVH_STACK_SIZE) {
+                stackSize = nextSize + 1;
+                stackOverflow[localIdx][nextSize - BVH_STACK_SIZE] = upperBits;
+            } else {
+                stackSize = nextSize + 1;
+                stack[nextSize] = upperBits;
+            }
+        }
+    }
+}
+
+void CollideTriangleMesh(
+    int particle,
+    int localIdx,
+    int shape,
+    float3 particleStart,
+    float3 particleEnd,
+    inout int count) {
+    float3 shapePosition = shapePositions[shape].xyz;
+    float4 shapeRotation = shapeRotations[shape];
+    float3 shapePrevPosition = shapePrevPositions[shape].xyz;
+    float4 shapePrevRotation = shapePrevRotations[shape];
+
+    float3 shapeDelta = shapePosition - shapePrevPosition;
+    float4 rotationDelta = shapeRotation - shapePrevRotation;
+    float3 shapeStart = shapePrevPosition + shapeDelta * gSubParams.kSubstepStart;
+    float4 qStart = NormalizeQuat(shapePrevRotation + rotationDelta * gSubParams.kSubstepStart);
+    float3 shapeEnd = shapePrevPosition + shapeDelta * gSubParams.kSubstepEnd;
+    float4 qEnd = NormalizeQuat(shapePrevRotation + rotationDelta * gSubParams.kSubstepEnd);
+    float4 geometry = shapeGeometry[shape];
+    int meshId = int(geometry.w) - 1;
+
+    float3 localStart = RotateInv(qStart, particleStart - shapeStart);
+    float3 localEnd = RotateInv(qEnd, particleEnd - shapeEnd);
+    float3 invScale = 1.0f.xxx / geometry.xyz;
+    float3 queryLower = min(localStart, localEnd) * invScale - gParams.kCollisionMargin * invScale;
+    float3 queryUpper = max(localStart, localEnd) * invScale + gParams.kCollisionMargin * invScale;
+    FlexTriangleMeshDevice mesh = meshOffsets[meshId];
+
+    float3 localEndAtStart = Rotate(qStart, localEnd) + shapeStart;
+    float3 localEndAtEnd = Rotate(qEnd, localEnd) + shapeEnd;
+    float4 velocity = float4((localEndAtEnd - localEndAtStart) * geometry.xyz, float(shape));
+    float3 segmentDelta = localEnd - localStart;
+
+    int stack[BVH_STACK_SIZE];
+    int stackSize = 1;
+    stack[0] = bvhRootNodeArray[meshId];
+
+    while (stackSize > 0) {
+        stackSize--;
+        int node;
+        if (stackSize >= BVH_STACK_SIZE) {
+            node = stackOverflow[localIdx][stackSize - BVH_STACK_SIZE];
+        } else {
+            node = stack[stackSize];
+        }
+
+        int nodeIndex = node + mesh.mNodeStart;
+        PackedNodeHalf lowerNode = bvhNodeLowersArray[nodeIndex];
+        PackedNodeHalf upperNode = bvhNodeUppersArray[nodeIndex];
+
+        if (!OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v))
+            continue;
+
+        uint lowerBits = lowerNode.ib & 0x7fffffffu;
+        if ((lowerNode.ib & 0x80000000u) != 0) {
+            int triIndex = int(lowerBits);
+            int indexBase = mesh.mIndexStart + triIndex * 3;
+            int i0 = triangleIndicesArray[indexBase + 0] + mesh.mVertexStart;
+            int i1 = triangleIndicesArray[indexBase + 1] + mesh.mVertexStart;
+            int i2 = triangleIndicesArray[indexBase + 2] + mesh.mVertexStart;
+
+            float3 va = triangleVerticesArray[i0].xyz * geometry.xyz;
+            float3 vb = triangleVerticesArray[i1].xyz * geometry.xyz;
+            float3 vc = triangleVerticesArray[i2].xyz * geometry.xyz;
+            float3 ab = vb - va;
+            float3 ac = vc - va;
+            float3 normal = normalize(cross(ab, ac));
+            float planeW = dot(va, normal);
+            float startDist = dot(localStart, normal) - planeW;
+            float endDist = dot(localEnd, normal) - planeW;
+
+            bool hit = false;
+            float4 plane = float4(normal, planeW);
+
+            if (endDist >= 0.0f && endDist < gParams.kCollisionMargin) {
+                float3 closest = ClosestPointOnTriangle(localEnd, va, vb, vc);
+                float3 delta = localEnd - closest;
+                float distSq = dot(delta, delta);
+                hit = distSq <= gParams.kCollisionMarginSq;
+
+                if (hit) {
+                    float lenSq = dot(delta, delta);
+                    float3 contactNormal = lenSq > 0.0f ? delta * rsqrt(lenSq) : normal;
+                    plane = float4(contactNormal, dot(contactNormal, closest));
+                }
+            }
+
+            if (!hit && startDist > 0.0f && endDist < 0.0f) {
+                hit = SegmentIntersectsTriangle(localStart, localEnd, va, vb, vc);
+            }
+
+            if (hit) {
+                StoreTriangleContact(
+                    particle,
+                    count,
+                    shape,
+                    gParams.kMaxContactsPerParticle,
+                    shapeEnd,
+                    qEnd,
+                    velocity,
+                    plane.xyz,
+                    plane.w);
+            }
+        } else {
+            int upperBits = int(upperNode.ib & 0x7fffffffu);
+            int nextSize;
+            if (stackSize >= BVH_STACK_SIZE) {
+                nextSize = stackSize + 1;
+                stackOverflow[localIdx][stackSize - BVH_STACK_SIZE] = int(lowerBits);
+            } else {
+                nextSize = stackSize + 1;
+                stack[stackSize] = int(lowerBits);
+            }
+
+            if (nextSize >= BVH_STACK_SIZE) {
+                stackSize = nextSize + 1;
+                stackOverflow[localIdx][nextSize - BVH_STACK_SIZE] = upperBits;
+            } else {
+                stackSize = nextSize + 1;
+                stack[nextSize] = upperBits;
+            }
+        }
+    }
+}
+
+[numthreads(BLOCK_DIM_X, 1, 1)]
+void CollideTriangles(int particle : SV_DispatchThreadID, int localIdx : SV_GroupThreadID) {
+    if (particle < gParams.kNumParticles) {
+        float3 particleStart = sortedPositions[particle].xyz;
+        float3 particleEnd = sortedNewPositions[particle].xyz;
+        int numTriangleShapes = 0;
+
+        if (gParams.kNumShapes != 0) {
+            TraverseShapeBvh(particle, localIdx, particleStart, particleEnd, numTriangleShapes);
+        }
+
+        int count = 0;
+        for (int i = 0; i < numTriangleShapes; ++i) {
+            int candidate = triangleShapeCandidates[localIdx * MAX_TRIANGLE_SHAPES + i];
+            CollideTriangleMesh(particle, localIdx, candidate, particleStart, particleEnd, count);
+        }
+
+        collisionCounts[particle] = count;
+    }
+}

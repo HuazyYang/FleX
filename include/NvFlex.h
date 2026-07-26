@@ -30,7 +30,9 @@
 
 //! \cond HIDDEN_SYMBOLS
 #if _WIN32
-#define NV_FLEX_API __declspec(dllexport)
+#ifndef NV_FLEX_API
+#define NV_FLEX_API extern "C" __declspec(dllexport)
+#endif
 #else
 #define NV_FLEX_API
 #endif
@@ -60,6 +62,8 @@ typedef struct NvFlexSolver NvFlexSolver;
  * Opaque type representing a data buffer, type and contents depends on usage, see NvFlexAllocBuffer()
  */
 typedef struct NvFlexBuffer NvFlexBuffer;
+
+typedef struct NvFlexTexture3D NvFlexTexture3D;
 
 /**
  * Controls behavior of NvFlexMap()
@@ -832,6 +836,9 @@ NV_FLEX_API int NvFlexGetDistanceFields(NvFlexLibrary* lib, NvFlexDistanceFieldI
  * @param[in] field The volume data stored such that the voxel at the x,y,z coordinate is addressed as field[z*dimx*dimy + y*dimx + x]
  */
 NV_FLEX_API void NvFlexUpdateDistanceField(NvFlexLibrary* lib, NvFlexDistanceFieldId sdf, int dimx, int dimy, int dimz, NvFlexBuffer* field);
+#if NVFLEX_USE_REVERSED_LIB
+NV_FLEX_API void NvFlexUpdateDistanceField2(NvFlexLibrary* lib, NvFlexDistanceFieldId sdf, NvFlexTexture3D *field);
+#endif
 
 /**
  * Create a convex mesh collision shape, see NvFlexConvexMeshId for details.
@@ -1333,6 +1340,12 @@ NV_FLEX_API void NvFlexFlush(NvFlexLibrary* lib);
 NV_FLEX_API void NvFlexWait(NvFlexLibrary* lib);
 
 //! \cond HIDDEN_SYMBOLS
+
+#if NVFLEX_USE_REVERSED_LIB
+NV_FLEX_API void NvFlexExecuteContext(NvFlexLibrary *lib);
+NV_FLEX_API void NvFlexWaitContext(NvFlexLibrary *lib);
+NV_FLEX_API void NvFlexResetContext(NvFlexLibrary* lib, bool waitForPrevious);
+#endif
 
 /**
  * Debug methods (unsupported)

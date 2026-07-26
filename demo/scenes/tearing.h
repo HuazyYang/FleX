@@ -128,5 +128,5 @@ public:
 		NvFlexSetRestParticles(g_solver, g_buffers->restPositions.buffer, NULL);
 	}
 
-	NvFlexExtAsset* mCloth;
+	NvFlexExtAsset* mCloth = nullptr;
 };

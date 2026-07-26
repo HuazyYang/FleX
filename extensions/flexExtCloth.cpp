@@ -246,11 +246,15 @@ void NvFlexExtDestroyTearingCloth(NvFlexExtAsset* asset)
 {
 	FlexExtTearingClothAsset* tearable = (FlexExtTearingClothAsset*)asset;
 
-	delete[] asset->particles;
-	delete[] asset->triangleIndices;
+    if(asset) {
+	    delete[] asset->particles;
+	    delete[] asset->triangleIndices;
+    }
 
-	delete tearable->mMesh;
-	delete tearable;
+    if(tearable) {
+	    delete tearable->mMesh;
+	    delete tearable;
+    }
 }
 
 void NvFlexExtTearClothMesh(NvFlexExtAsset* asset, float maxStrain, int maxSplits, NvFlexExtTearingParticleClone* particleCopies, int* numParticleCopies,  int maxCopies, NvFlexExtTearingMeshEdit* triangleEdits, int* numTriangleEdits, int maxEdits) 

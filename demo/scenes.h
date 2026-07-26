@@ -37,6 +37,7 @@ class Scene
 public:
 
 	Scene(const char* name) : mName(name) {}
+    virtual ~Scene() = default;
 	
 	virtual void Initialize() = 0;
 	virtual void PostInitialize() {}

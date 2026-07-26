@@ -24,7 +24,9 @@
 // NVIDIA Corporation.
 //
 // Copyright (c) 2013-2020 NVIDIA Corporation. All rights reserved.
-
+#ifdef NVFLEX__USE_MICROSOFT_VLD
+#include <vld.h>
+#endif
 #include "../core/types.h"
 #include "../core/maths.h"
 #include "../core/platform.h"
@@ -560,9 +562,118 @@ inline float sqr(float x) { return x*x; }
 #include "scenes.h"
 #include "benchmark.h"
 
+struct PlaybackContext {
+
+    enum Mode {
+        None = 0,
+        Read = 1,
+        Write = 2
+    };
+    
+    Mode writeMode;
+    uint32_t frameIndex;
+    FILE* archiveStream;
+    std::vector<Vec4> positionsBak;
+
+    PlaybackContext()
+        : writeMode{},
+          frameIndex{},
+          archiveStream{},
+          positionsBak{} {}
+
+    void setMode(Mode mode) {
+        writeMode = mode;
+    }
+
+    void init() {
+        if(this->writeMode == None)
+            return;
+
+        frameIndex = 0;
+        if (archiveStream) {
+            fclose(archiveStream);
+            archiveStream = nullptr;
+        }
+
+        if (g_scene >= 0) {
+            char nameBuff[_MAX_PATH];
+            snprintf(nameBuff, _countof(nameBuff), "%s_playbackbuffer",
+                     g_scenes[g_scene]->GetName());
+            archiveStream = fopen(nameBuff, writeMode == Write ? "wb" : "rb");
+            assert(archiveStream);
+        }
+    }
+
+    void updateFrame() {
+        if(writeMode == None)
+            return;
+
+        ++frameIndex;
+
+        if(!isInSelectedFrameRange()) {
+            terminate();
+            return;
+        }
+
+        if (archiveStream) {
+            if(writeMode == Write) {
+                uint32_t numParticles = g_buffers->positions.size();
+                fwrite(&numParticles, sizeof(uint32_t), 1, archiveStream);
+                fwrite(&g_buffers->positions[0], sizeof(Vec4), numParticles, archiveStream);
+            } else {
+                uint32_t numParticles = g_buffers->positions.size();
+                uint32_t numParticlesBak;
+                fread(&numParticlesBak, sizeof(uint32_t), 1, archiveStream);
+                positionsBak.resize(numParticlesBak);
+                fread(positionsBak.data(), sizeof(Vec4), numParticlesBak, archiveStream);
+
+                if(numParticles != numParticlesBak) {
+                    printf(
+                        "[Playback][Frame %u] particle number mis-coincident: current "
+                        "(%u), expect(%u)\n",
+                        frameIndex, numParticles, numParticlesBak);
+                } else {
+                    bool coincident = true;
+                    for(uint32_t i = 0; i < numParticles; ++i) {
+                        auto &pos0 = g_buffers->positions[i];
+                        auto &pos1 = positionsBak[i];
+                        constexpr float eps = 1e-3f;
+                        if(!(std::abs(pos0.x - pos1.x) < eps && std::abs(pos0.y - pos1.y) < eps && std::abs(pos0.z - pos1.z) < eps
+                        && std::abs(pos0.w - pos1.w) < eps)) {
+                            coincident = false;
+                            break;
+                        }
+                    }
+
+                    if(!coincident)
+                        printf("[Playback][Frame %u] particle buffer mis-coincident\n", frameIndex);
+                }
+            }
+        }
+    }
+
+private:
+    bool isInSelectedFrameRange() const {
+        return frameIndex < 200;
+    }
+
+    void terminate() {
+        if (writeMode == None)
+            return;
+
+        if (archiveStream) {
+            fclose(archiveStream);
+            archiveStream = nullptr;
+        }
+    }
+
+} g_playbackCtx;
+
 void Init(int scene, bool centerCamera = true)
 {
 	RandInit();
+
+    g_playbackCtx.init();
 
 	if (g_solver)
 	{
@@ -772,6 +883,9 @@ void Init(int scene, bool centerCamera = true)
 
 	// create scene
 	StartGpuWork();
+#if NVFLEX_USE_REVERSED_LIB
+        NvFlexResetContext(g_flexLib, true);
+#endif
 	g_scenes[g_scene]->Initialize();
 	EndGpuWork();
 
@@ -805,7 +919,11 @@ void Init(int scene, bool centerCamera = true)
 	Vec3 shapeLower, shapeUpper;
 	GetShapeBounds(shapeLower, shapeUpper);
 
-	// update bounds
+#if NVFLEX_USE_REVERSED_LIB
+        NvFlexExecuteContext(g_flexLib);
+#endif
+
+        // update bounds
 	g_sceneLower = Min(Min(g_sceneLower, particleLower), shapeLower);
 	g_sceneUpper = Max(Max(g_sceneUpper, particleUpper), shapeUpper); 
 
@@ -933,6 +1051,10 @@ void Init(int scene, bool centerCamera = true)
 	//-----------------------------
 	// Send data to Flex
 
+#if NVFLEX_USE_REVERSED_LIB
+        NvFlexResetContext(g_flexLib, true);
+#endif
+
 	NvFlexCopyDesc copyDesc;
 	copyDesc.dstOffset = 0;
 	copyDesc.srcOffset = 0;
@@ -1019,6 +1141,10 @@ void Init(int scene, bool centerCamera = true)
 
 		printf("Finished warm up.\n");
 	}
+
+#if NVFLEX_USE_REVERSED_LIB
+    NvFlexExecuteContext(g_flexLib);
+#endif
 }
 
 void Reset()
@@ -1052,8 +1178,14 @@ void Shutdown()
 	g_fields.clear();
 	g_meshes.clear();
 
-	NvFlexDestroySolver(g_solver);
-	NvFlexShutdown(g_flexLib);
+    for(auto scene : g_scenes)
+        delete scene;
+    g_scenes.resize(0);
+
+    delete g_mesh;
+
+    NvFlexDestroySolver(g_solver);
+    NvFlexShutdown(g_flexLib);
 
 #if _WIN32
 	if (g_ffmpeg)
@@ -2038,7 +2170,13 @@ void UpdateFrame()
 
 	double waitBeginTime = GetSeconds();
 
+#if NVFLEX_USE_REVERSED_LIB
+        NvFlexWaitContext(g_flexLib);
+#endif
+
 	MapBuffers(g_buffers);
+
+    g_playbackCtx.updateFrame();
 
 	double waitEndTime = GetSeconds();
 
@@ -2076,14 +2214,14 @@ void UpdateFrame()
 	}
 
 	StartFrame(Vec4(g_clearColor, 1.0f));
-
+        
 	// main scene render
 	RenderScene();
 	RenderDebug();
 
 	int newScene = DoUI();
 
-	EndFrame();
+    EndFrame();
 
 	// If user has disabled async compute, ensure that no compute can overlap 
 	// graphics by placing a sync between them	
@@ -2128,6 +2266,10 @@ void UpdateFrame()
 	// Flex Update
 
 	double updateBeginTime = GetSeconds();
+
+#if NVFLEX_USE_REVERSED_LIB
+        NvFlexResetContext(g_flexLib, false);
+#endif
 
 	// send any particle updates to the solver
 	NvFlexSetParticles(g_solver, g_buffers->positions.buffer, NULL);
@@ -2205,6 +2347,10 @@ void UpdateFrame()
 		// read back just the new diffuse particle count, render buffers will be updated during rendering
 		NvFlexGetDiffuseParticles(g_solver, NULL, NULL, g_buffers->diffuseCount.buffer);
 	}
+
+#if NVFLEX_USE_REVERSED_LIB
+        NvFlexExecuteContext(g_flexLib);
+#endif
 
 	double updateEndTime = GetSeconds();
 
@@ -2870,6 +3016,21 @@ int main(int argc, char* argv[])
 			if (d >= 0 && d <= 2)
 				g_graphics = d;
 		}
+
+        char playbackMode[8] = {};
+
+        if(sscanf(argv[i], "-playback-mode=%7s", playbackMode) == 1) {
+            if(_stricmp(playbackMode, "none") == 0) {
+                g_playbackCtx.setMode(PlaybackContext::None);
+            } else if(_stricmp(playbackMode, "read") == 0) {
+                g_playbackCtx.setMode(PlaybackContext::Read);
+            } else if(_stricmp(playbackMode, "write") == 0) {
+                g_playbackCtx.setMode(PlaybackContext::Write);
+            } else {
+                fprintf(stderr, "Invalid option for --playback-mode, use --playback=<none|read|write>\n");
+                return -1;
+            }
+        }
 	}
 
 	// opening scene

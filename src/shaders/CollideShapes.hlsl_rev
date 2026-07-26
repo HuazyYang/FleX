@@ -1,0 +1,432 @@
+#include "KernelParams.hlsli"
+
+#define BLOCK_DIM_X 128
+#define BVH_STACK_SIZE 64
+
+static const uint eNvFlexShapeFlagTrigger = 0x10;
+
+struct PackedNodeHalf {
+    float3 v;
+    uint ib;
+};
+
+SamplerState sdfSampler : register(s0);
+
+StructuredBuffer<float4> shapeGeometry : register(t0);
+StructuredBuffer<float4> shapePositions : register(t1);
+StructuredBuffer<float4> shapeRotations : register(t2);
+StructuredBuffer<float4> shapePrevPositions : register(t3);
+StructuredBuffer<float4> shapePrevRotations : register(t4);
+StructuredBuffer<int> shapeFlags : register(t5);
+StructuredBuffer<float4> sortedPositions : register(t6);
+StructuredBuffer<float4> sortedNewPositions : register(t7);
+StructuredBuffer<int> sortedPhases : register(t8);
+StructuredBuffer<int> shapeBvhRootNode : register(t9);
+StructuredBuffer<PackedNodeHalf> shapeBvhNodeLowers : register(t10);
+StructuredBuffer<PackedNodeHalf> shapeBvhNodeUppers : register(t11);
+StructuredBuffer<FlexConvexMeshDevice> convexes : register(t12);
+StructuredBuffer<float4> convexPlanes : register(t13);
+StructuredBuffer<FlexSDFDevice> sdfs : register(t14);
+
+Texture3D<float> sdfTex0 : register(t15);
+Texture3D<float> sdfTex1 : register(t16);
+Texture3D<float> sdfTex2 : register(t17);
+Texture3D<float> sdfTex3 : register(t18);
+Texture3D<float> sdfTex4 : register(t19);
+Texture3D<float> sdfTex5 : register(t20);
+Texture3D<float> sdfTex6 : register(t21);
+Texture3D<float> sdfTex7 : register(t22);
+Texture3D<float> sdfTex8 : register(t23);
+Texture3D<float> sdfTex9 : register(t24);
+Texture3D<float> sdfTex10 : register(t25);
+Texture3D<float> sdfTex11 : register(t26);
+Texture3D<float> sdfTex12 : register(t27);
+Texture3D<float> sdfTex13 : register(t28);
+Texture3D<float> sdfTex14 : register(t29);
+Texture3D<float> sdfTex15 : register(t30);
+
+RWStructuredBuffer<int> collisionCounts : register(u0);
+RWStructuredBuffer<float4> collisionPlanes : register(u1);
+RWStructuredBuffer<float4> collisionVelocities : register(u2);
+
+float3 Rotate(float4 q, float3 v) {
+    return v + 2.0f * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+float3 RotateInv(float4 q, float3 v) {
+    return v + 2.0f * cross(q.xyz, cross(q.xyz, v) - q.w * v);
+}
+
+float4 NormalizeQuat(float4 q) {
+    return q * rsqrt(max(dot(q, q), 1.0e-20f));
+}
+
+float3 SafeNormalize(float3 v) {
+    float lenSq = dot(v, v);
+    return lenSq > 0.0f ? v * rsqrt(lenSq) : float3(0.0f, 1.0f, 0.0f);
+}
+
+bool OverlapAabb(float3 lowerA, float3 upperA, float3 lowerB, float3 upperB) {
+    return all(upperA >= lowerB) && all(upperB >= lowerA);
+}
+
+bool IntersectSegmentAabb(float3 a, float3 b, float3 halfExtents) {
+    float3 d = b - a;
+    float3 invD = rcp(d);
+    float3 t0 = (-halfExtents - a) * invD;
+    float3 t1 = (halfExtents - a) * invD;
+    float3 tMin3 = min(t0, t1);
+    float3 tMax3 = max(t0, t1);
+    float tMin = max(max(tMin3.x, tMin3.y), max(tMin3.z, 0.0f));
+    float tMax = min(min(tMax3.x, tMax3.y), min(tMax3.z, 1.0f));
+    return tMin < tMax;
+}
+
+float SampleSDF(int index, float3 uvw) {
+    switch (index) {
+    case 0:
+        return sdfTex0.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 1:
+        return sdfTex1.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 2:
+        return sdfTex2.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 3:
+        return sdfTex3.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 4:
+        return sdfTex4.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 5:
+        return sdfTex5.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 6:
+        return sdfTex6.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 7:
+        return sdfTex7.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 8:
+        return sdfTex8.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 9:
+        return sdfTex9.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 10:
+        return sdfTex10.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 11:
+        return sdfTex11.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 12:
+        return sdfTex12.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 13:
+        return sdfTex13.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 14:
+        return sdfTex14.SampleLevel(sdfSampler, uvw, 0.0f);
+    case 15:
+        return sdfTex15.SampleLevel(sdfSampler, uvw, 0.0f);
+    default:
+        return 0.0f;
+    }
+}
+
+void StoreContact(
+    int particle,
+    inout int count,
+    int shape,
+    int flags,
+    float4 qStart,
+    float4 qEnd,
+    float3 xStart,
+    float3 xEnd,
+    float3 particleEnd,
+    float3 localParticleEnd,
+    float3 localNormal,
+    float localPlaneW) {
+
+    if (count >= gParams.kMaxContactsPerParticle)
+        return;
+
+    float3 normal = SafeNormalize(Rotate(qEnd, localNormal));
+    float4 plane = float4(normal, localPlaneW - dot(normal, xEnd));
+
+    if ((flags & eNvFlexShapeFlagTrigger) != 0)
+        plane = 0.0f.xxxx;
+
+    float3 shapeStartPoint = xStart + Rotate(qStart, localParticleEnd);
+    int contactIndex = particle * gParams.kMaxContactsPerParticle + count;
+
+    collisionPlanes[contactIndex] = plane;
+    collisionVelocities[contactIndex] = float4(particleEnd - shapeStartPoint, float(shape));
+    count++;
+}
+
+bool SphereContact(float3 localEnd, float radius, out float3 normal, out float planeW) {
+    float lenSq = dot(localEnd, localEnd);
+    float len = sqrt(lenSq);
+    normal = lenSq > 0.0f ? localEnd * rsqrt(lenSq) : float3(0.0f, 1.0f, 0.0f);
+    planeW = -radius;
+    return len - radius - gParams.kCollisionDistance < gParams.kCollisionThreshold;
+}
+
+bool CapsuleContact(
+    float3 localStart,
+    float3 localEnd,
+    float radius,
+    float halfHeight,
+    out float3 normal,
+    out float planeW) {
+
+    float x = clamp(localEnd.x, -halfHeight, halfHeight);
+    float3 axisPoint = float3(x, 0.0f, 0.0f);
+    float3 delta = localEnd - axisPoint;
+    float distSq = dot(delta, delta);
+    float dist = sqrt(distSq);
+    bool endContact = dist - radius - gParams.kCollisionDistance < gParams.kCollisionThreshold;
+
+    float3 seg = localEnd - localStart;
+    float3 capMin = float3(-halfHeight - radius - gParams.kCollisionDistance - gParams.kCollisionThreshold, 0.0f, 0.0f);
+    float3 capMax = float3(halfHeight + radius + gParams.kCollisionDistance + gParams.kCollisionThreshold, 0.0f, 0.0f);
+    float3 closest;
+
+    float axisLen = halfHeight * 2.0f;
+    if (dot(seg, seg) > 0.0f && axisLen > 0.0f) {
+        float s = saturate((localEnd.x - localStart.x) / max(seg.x, 1.0e-20f));
+        float cx = clamp(lerp(localStart.x, localEnd.x, s), capMin.x, capMax.x);
+        closest = float3(cx, 0.0f, 0.0f);
+    } else {
+        closest = axisPoint;
+    }
+
+    if (!endContact) {
+        float3 d = localEnd - closest;
+        endContact = dot(d, d) <=
+            (radius + gParams.kCollisionDistance + gParams.kCollisionThreshold) *
+            (radius + gParams.kCollisionDistance + gParams.kCollisionThreshold);
+    }
+
+    normal = distSq > 0.0f ? delta * rsqrt(distSq) : float3(0.0f, 1.0f, 0.0f);
+    planeW = -dot(normal, axisPoint) - radius;
+    return endContact;
+}
+
+bool BoxContact(
+    float3 localStart,
+    float3 localEnd,
+    float3 halfExtents,
+    out float3 normal,
+    out float planeW) {
+
+    normal = float3(0.0f, 1.0f, 0.0f);
+    planeW = 0.0f;
+
+    float collisionOffset = gParams.kCollisionDistance + gParams.kCollisionThreshold;
+    float3 expanded = halfExtents + collisionOffset.xxx;
+
+    if (!IntersectSegmentAabb(localStart, localEnd, expanded))
+        return false;
+
+    float3 distToMax = expanded - localEnd;
+    float3 distToMin = expanded + localEnd;
+    float best = distToMin.x;
+    normal = float3(-1.0f, 0.0f, 0.0f);
+    planeW = -halfExtents.x;
+
+    if (distToMax.x < best) {
+        best = distToMax.x;
+        normal = float3(1.0f, 0.0f, 0.0f);
+        planeW = -halfExtents.x;
+    }
+    if (distToMin.y < best) {
+        best = distToMin.y;
+        normal = float3(0.0f, -1.0f, 0.0f);
+        planeW = -halfExtents.y;
+    }
+    if (distToMax.y < best) {
+        best = distToMax.y;
+        normal = float3(0.0f, 1.0f, 0.0f);
+        planeW = -halfExtents.y;
+    }
+    if (distToMin.z < best) {
+        best = distToMin.z;
+        normal = float3(0.0f, 0.0f, -1.0f);
+        planeW = -halfExtents.z;
+    }
+    if (distToMax.z < best) {
+        normal = float3(0.0f, 0.0f, 1.0f);
+        planeW = -halfExtents.z;
+    }
+
+    return true;
+}
+
+bool ConvexContact(
+    float3 localStart,
+    float3 localEnd,
+    float3 scale,
+    int meshId,
+    out float3 normal,
+    out float planeW) {
+
+    normal = float3(0.0f, 1.0f, 0.0f);
+    planeW = 0.0f;
+
+    FlexConvexMeshDevice convex = convexes[meshId - 1];
+    int planeBegin = convex.mPlaneOffset;
+    int planeEnd = planeBegin + convex.mPlaneCount;
+    float enter = 0.0f;
+    float exit = 1.0f;
+    float maxDistance = -3.402823466e+38f;
+    float3 maxNormal = float3(0.0f, 1.0f, 0.0f);
+    float maxPlaneW = 0.0f;
+
+    for (int i = planeBegin; i < planeEnd; ++i) {
+        float4 p = convexPlanes[i];
+        float3 n = p.xyz / scale;
+        float invLen = rsqrt(max(dot(n, n), 1.0e-20f));
+        n *= invLen;
+        float w = p.w * invLen;
+        float d0 = dot(n, localStart) + w;
+        float d1 = dot(n, localEnd) + w;
+
+        if (d1 > maxDistance) {
+            maxDistance = d1;
+            maxNormal = n;
+            maxPlaneW = w;
+        }
+
+        float denom = d1 - d0;
+        if (denom != 0.0f) {
+            float t = -d0 / denom;
+            if (denom < 0.0f)
+                enter = max(enter, t);
+            else
+                exit = min(exit, t);
+        } else if (d0 > gParams.kCollisionDistance + gParams.kCollisionThreshold) {
+            enter = exit + 1.0f;
+        }
+    }
+
+    normal = maxNormal;
+    planeW = maxPlaneW;
+    return enter < exit || maxDistance < gParams.kCollisionDistance + gParams.kCollisionThreshold;
+}
+
+bool SdfContact(float3 localEnd, float scale, int fieldId, out float3 normal, out float planeW) {
+    normal = float3(0.0f, 1.0f, 0.0f);
+    planeW = 0.0f;
+
+    int sdfIndex = fieldId - 1;
+    float invScale = rcp(scale);
+    float3 uvw = localEnd * invScale;
+
+    if (!all(uvw > 0.0f.xxx) || !all(uvw < 1.0f.xxx))
+        return false;
+
+    float dist = SampleSDF(sdfIndex, uvw);
+    if (dist >= (gParams.kCollisionDistance + gParams.kCollisionThreshold) * invScale)
+        return false;
+
+    float3 h = sdfs[sdfIndex].mInvDim.xyz;
+    float dx = SampleSDF(sdfIndex, uvw + float3(h.x, 0.0f, 0.0f)) -
+        SampleSDF(sdfIndex, uvw - float3(h.x, 0.0f, 0.0f));
+    float dy = SampleSDF(sdfIndex, uvw + float3(0.0f, h.y, 0.0f)) -
+        SampleSDF(sdfIndex, uvw - float3(0.0f, h.y, 0.0f));
+    float dz = SampleSDF(sdfIndex, uvw + float3(0.0f, 0.0f, h.z)) -
+        SampleSDF(sdfIndex, uvw - float3(0.0f, 0.0f, h.z));
+
+    normal = SafeNormalize(float3(dx, dy, dz));
+    planeW = dist * scale - dot(normal, localEnd);
+    return dot(normal, normal) > 0.0f;
+}
+
+[numthreads(BLOCK_DIM_X, 1, 1)]
+void CollideShapes(int particle : SV_DispatchThreadID) {
+    if (particle >= gParams.kNumParticles)
+        return;
+
+    float3 particleEnd = sortedNewPositions[particle].xyz;
+    int count = collisionCounts[particle];
+
+    for (int i = 0; i < gParams.kNumPlanes; ++i) {
+        float4 plane = gParams.kPlanes[i];
+        float d = dot(plane.xyz, particleEnd) + plane.w - gParams.kCollisionDistance;
+
+        if (d <= gParams.kCollisionThreshold && count < gParams.kMaxContactsPerParticle) {
+            int contactIndex = particle * gParams.kMaxContactsPerParticle + count;
+            collisionPlanes[contactIndex] = plane;
+            collisionVelocities[contactIndex] = float4(0.0f, 0.0f, 0.0f, -1.0f);
+            count++;
+        }
+    }
+
+    if (gParams.kNumShapes != 0) {
+        float3 particleStart = sortedPositions[particle].xyz;
+        uint particleChannels = uint(sortedPhases[particle]) & 0xff000000u;
+        float3 queryLower = min(particleStart, particleEnd) - gParams.kCollisionMargin.xxx;
+        float3 queryUpper = max(particleStart, particleEnd) + gParams.kCollisionMargin.xxx;
+        uint stack[BVH_STACK_SIZE];
+        int stackSize = 1;
+        stack[0] = uint(shapeBvhRootNode[0]);
+
+        while (stackSize > 0) {
+            uint node = stack[--stackSize];
+            PackedNodeHalf lowerNode = shapeBvhNodeLowers[node];
+            PackedNodeHalf upperNode = shapeBvhNodeUppers[node];
+
+            if (!OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v))
+                continue;
+
+            if ((lowerNode.ib & 0x80000000u) == 0) {
+                if (stackSize + 1 < BVH_STACK_SIZE) {
+                    stack[stackSize++] = lowerNode.ib & 0x7fffffffu;
+                    stack[stackSize++] = upperNode.ib & 0x7fffffffu;
+                }
+                continue;
+            }
+
+            int shape = int(lowerNode.ib & 0x7fffffffu);
+            int flags = shapeFlags[shape];
+            if ((particleChannels & uint(flags)) == 0)
+                continue;
+
+            uint type = uint(flags) & 7u;
+            float4 shapePrevPos = shapePrevPositions[shape];
+            float4 shapePos = shapePositions[shape];
+            float4 qStart = NormalizeQuat(shapePrevRotations[shape]);
+            float4 qEnd = NormalizeQuat(shapeRotations[shape]);
+            float3 xStart = lerp(shapePrevPos.xyz, shapePos.xyz, gSubParams.kSubstepStart);
+            float3 xEnd = lerp(shapePrevPos.xyz, shapePos.xyz, gSubParams.kSubstepEnd);
+            qStart = NormalizeQuat(lerp(shapePrevRotations[shape], shapeRotations[shape], gSubParams.kSubstepStart));
+            qEnd = NormalizeQuat(lerp(shapePrevRotations[shape], shapeRotations[shape], gSubParams.kSubstepEnd));
+
+            float3 localEnd = RotateInv(qEnd, particleEnd - xEnd);
+            float3 localStart = RotateInv(qStart, particleStart - xStart);
+            float4 geometry = shapeGeometry[shape];
+            float3 localNormal = float3(0.0f, 1.0f, 0.0f);
+            float localPlaneW = 0.0f;
+            bool hit = false;
+
+            if (type == eNvFlexShapeSphere) {
+                hit = SphereContact(localEnd, geometry.x, localNormal, localPlaneW);
+            } else if (type == eNvFlexShapeCapsule) {
+                hit = CapsuleContact(localStart, localEnd, geometry.x, geometry.y, localNormal, localPlaneW);
+            } else if (type == eNvFlexShapeBox) {
+                hit = BoxContact(localStart, localEnd, geometry.xyz, localNormal, localPlaneW);
+            } else if (type == eNvFlexShapeConvexMesh) {
+                hit = ConvexContact(localStart, localEnd, geometry.xyz, int(geometry.w), localNormal, localPlaneW);
+            } else if (type == eNvFlexShapeSDF) {
+                hit = SdfContact(localEnd, geometry.x, int(geometry.y), localNormal, localPlaneW);
+            }
+
+            if (hit) {
+                StoreContact(
+                    particle,
+                    count,
+                    shape,
+                    flags,
+                    qStart,
+                    qEnd,
+                    xStart,
+                    xEnd,
+                    particleEnd,
+                    localEnd,
+                    localNormal,
+                    localPlaneW);
+            }
+        }
+    }
+
+    collisionCounts[particle] = count;
+}

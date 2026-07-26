@@ -3,6 +3,12 @@
 # windows
 *.exp
 *.ilk
+.vscode
+.cache
+build
+demo/compiler
+extensions/compiler
+src/dx/context
 
 # android
 *.apk

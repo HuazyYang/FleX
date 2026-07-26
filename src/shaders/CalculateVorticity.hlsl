@@ -1,0 +1,53 @@
+#include "KernelParams.hlsli"
+
+StructuredBuffer<float4> sortedNewPositions : register(t0);
+StructuredBuffer<float4> sortedNewVelocities : register(t1);
+StructuredBuffer<int> sortedPhases : register(t2);
+StructuredBuffer<int> contacts : register(t3);
+StructuredBuffer<int> contactCounts : register(t4);
+RWStructuredBuffer<float4> curl : register(u0);
+
+#define BLOCK_DIM_X 256
+
+[numthreads(BLOCK_DIM_X, 1, 1)]
+void CalculateVorticity(int globalIdx: SV_DispatchThreadID) {
+
+    if (globalIdx < gParams.kNumParticles) {
+
+        uint phase = (uint)sortedPhases[globalIdx];
+        if ((phase & 0x400000u) == 0) {
+            curl[globalIdx] = 0.0.xxxx;
+            return;
+        }
+
+        float3 p0 = sortedNewPositions[globalIdx].xyz;
+        float3 v0 = sortedNewVelocities[globalIdx].xyz;
+        int count = contactCounts[globalIdx];
+        int contactIdx = globalIdx;
+        float3 rotSum = 0.0.xxx;
+
+        for (int i = 0; i < count; ++i) {
+            int contact = contacts[contactIdx];
+            contactIdx += gParams.kNumParticlesAligned;
+            int contactPhase = sortedPhases[contact];
+
+            if ((contactPhase & 0x400000) == 0)
+                continue;
+
+            float3 p1 = sortedNewPositions[contact].xyz;
+            float3 d01 = p0 - p1;
+            float lenSqr = dot(d01, d01);
+            bool insideKernel = 0 < lenSqr && lenSqr <= gParams.kRadiusSq;
+            float3 v1 = sortedNewVelocities[contact].xyz;
+            float3 v10 = v1 - v0;
+            float len = sqrt(lenSqr);
+            float3 q10 = (1.0 - len * gParams.kInvRadius) * (-gParams.kSpiky2) / len * d01;
+            float3 rot = v10.yzx * q10.zxy - q10.yzx * v10.zxy;
+
+            rotSum = insideKernel ? rotSum + rot : rotSum;
+        }
+
+        float rotAmount = length(rotSum);
+        curl[globalIdx] = float4(rotSum, rotAmount);
+    }
+}

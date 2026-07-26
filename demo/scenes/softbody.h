@@ -24,6 +24,8 @@ public:
 		memcpy(mColorPicker, colorPicker, sizeof(Vec3) * 7);
 	}
 
+    ~SoftBody() { reset(); }
+
 	float mRadius;
 	float mRelaxationFactor;
 	bool mPlinth;
@@ -128,6 +130,13 @@ public:
 		}
 	}
 
+    void reset() {
+
+        for(auto &inst : mRenderingInstances)
+            delete inst.mMesh;
+        mRenderingInstances.resize(0);
+    }
+
 	virtual void Initialize()
 	{
 		float radius = mRadius;
@@ -155,7 +164,7 @@ public:
 
 		g_buffers->rigidOffsets.push_back(0);
 
-		mRenderingInstances.resize(0);
+        reset();
 
 		// build soft bodies 
 		for (int i = 0; i < int(mInstances.size()); i++)

@@ -1,0 +1,104 @@
+cbuffer consts : register(b0) {
+    uint gNumBounds;
+}
+
+struct FlexConvexMeshDevice {
+    float4 mLower;
+    float4 mUpper;
+    int mPlaneOffset;
+    int mPlaneCount;
+    int2 mPad;
+};
+
+struct FlexTriangleMeshDevice {
+    float4 mLower;
+    float4 mUpper;
+    int mIndexStart;
+    int mVertexStart;
+    int mNodeStart;
+    int mPad;
+};
+
+static const uint eNvFlexShapeSphere = 0;
+static const uint eNvFlexShapeCapsule = 1;
+static const uint eNvFlexShapeBox = 2;
+static const uint eNvFlexShapeConvexMesh = 3;
+static const uint eNvFlexShapeTriangleMesh = 4;
+static const uint eNvFlexShapeSDF = 5;
+
+StructuredBuffer<float4> positions : register(t0);
+StructuredBuffer<float4> rotations : register(t1);
+StructuredBuffer<float4> positionsPrev : register(t2);
+StructuredBuffer<float4> rotationsPrev : register(t3);
+StructuredBuffer<uint> flags : register(t4);
+StructuredBuffer<float4> geometry : register(t5);
+StructuredBuffer<FlexConvexMeshDevice> convexMeshes : register(t6);
+StructuredBuffer<FlexTriangleMeshDevice> triangleMeshes : register(t7);
+RWStructuredBuffer<float4> lowers : register(u0);
+RWStructuredBuffer<float4> uppers : register(u1);
+
+float3 RotateVector(float4 q, float3 v) {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+void LocalShapeBounds(uint shapeType, float4 geom, out float3 lower, out float3 upper) {
+    lower = 0.0;
+    upper = 0.0;
+
+    if (shapeType == eNvFlexShapeSphere) {
+        lower = -geom.xxx;
+        upper = geom.xxx;
+    } else if (shapeType == eNvFlexShapeCapsule) {
+        lower = -geom.xxx - float3(geom.y, 0.0, 0.0);
+        upper = geom.xxx + float3(geom.y, 0.0, 0.0);
+    } else if (shapeType == eNvFlexShapeBox) {
+        lower = -geom.xyz;
+        upper = geom.xyz;
+    } else if (shapeType == eNvFlexShapeConvexMesh) {
+        uint meshIndex = uint(geom.w) - 1;
+        lower = convexMeshes[meshIndex].mLower.xyz * geom.xyz;
+        upper = convexMeshes[meshIndex].mUpper.xyz * geom.xyz;
+    } else if (shapeType == eNvFlexShapeTriangleMesh) {
+        uint meshIndex = uint(geom.w) - 1;
+        lower = triangleMeshes[meshIndex].mLower.xyz * geom.xyz;
+        upper = triangleMeshes[meshIndex].mUpper.xyz * geom.xyz;
+    } else if (shapeType == eNvFlexShapeSDF) {
+        lower = 0.0;
+        upper = geom.xxx;
+    }
+}
+
+void TransformBounds(float3 position, float4 rotation, float3 lower, float3 upper, out float3 outLower, out float3 outUpper) {
+    float3 center = 0.5 * (lower + upper);
+    float3 extents = upper - center;
+
+    float3 axisX = RotateVector(rotation, float3(extents.x, 0.0, 0.0));
+    float3 axisY = RotateVector(rotation, float3(0.0, extents.y, 0.0));
+    float3 axisZ = RotateVector(rotation, float3(0.0, 0.0, extents.z));
+    float3 worldExtents = abs(axisX) + abs(axisY) + abs(axisZ);
+    float3 worldCenter = position + RotateVector(rotation, center);
+
+    outLower = worldCenter - worldExtents;
+    outUpper = worldCenter + worldExtents;
+}
+
+[numthreads(256, 1, 1)]
+void TransformShapeBounds(uint idx : SV_DispatchThreadID) {
+    if (idx >= gNumBounds)
+        return;
+
+    uint shapeType = flags[idx] & 7;
+    float3 localLower;
+    float3 localUpper;
+    LocalShapeBounds(shapeType, geometry[idx], localLower, localUpper);
+
+    float3 lowerNow;
+    float3 upperNow;
+    float3 lowerPrev;
+    float3 upperPrev;
+    TransformBounds(positions[idx].xyz, rotations[idx], localLower, localUpper, lowerNow, upperNow);
+    TransformBounds(positionsPrev[idx].xyz, rotationsPrev[idx], localLower, localUpper, lowerPrev, upperPrev);
+
+    lowers[idx] = float4(min(lowerNow, lowerPrev), 0.0);
+    uppers[idx] = float4(max(upperNow, upperPrev), 0.0);
+}

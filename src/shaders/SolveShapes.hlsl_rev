@@ -1,0 +1,111 @@
+#include "Utils.hlsli"
+
+StructuredBuffer<int> rigidOffsets : register(t0);
+StructuredBuffer<int> rigidIndices : register(t1);
+StructuredBuffer<float> rigidCoefficients : register(t2);
+StructuredBuffer<int> reverseLookup : register(t5);
+StructuredBuffer<float4> localNormals : register(t7);
+RWByteAddressBuffer accum : register(u0);
+RWStructuredBuffer<float3> localPositions : register(u1);
+RWStructuredBuffer<float4> newPositions : register(u2);
+RWStructuredBuffer<float4> rotations : register(u3);
+RWStructuredBuffer<float3> translations : register(u4);
+RWStructuredBuffer<float4> normals : register(u5);
+
+float4 NormalizeQuat(float4 q) {
+    return q * rsqrt(max(dot(q, q), 1.0e-20));
+}
+
+float4 QuatMul(float4 a, float4 b) {
+    return float4(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz),
+                  a.w * b.w - dot(a.xyz, b.xyz));
+}
+
+float3 Rotate(float4 q, float3 v) {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+float4 ExtractRotation(float3 c0, float3 c1, float3 c2, float4 q) {
+    q = NormalizeQuat(q);
+    [unroll]
+    for (int i = 0; i < 4; ++i) {
+        float3 r0 = Rotate(q, float3(1.0, 0.0, 0.0));
+        float3 r1 = Rotate(q, float3(0.0, 1.0, 0.0));
+        float3 r2 = Rotate(q, float3(0.0, 0.0, 1.0));
+        float denom = abs(dot(r0, c0) + dot(r1, c1) + dot(r2, c2)) + 1.0e-9;
+        float3 omega = (cross(r0, c0) + cross(r1, c1) + cross(r2, c2)) / denom;
+        float angle = length(omega);
+        if (angle <= 1.0e-9)
+            break;
+
+        float halfAngle = 0.5 * angle;
+        float s, c;
+        sincos(halfAngle, s, c);
+        q = NormalizeQuat(QuatMul(float4(omega / angle * s, c), q));
+    }
+    return q;
+}
+
+void AccumulateDelta(uint sortedIndex, float3 delta) {
+    uint addr = sortedIndex << 4;
+    InterlockedAddFp32(accum, addr + 0, delta.x);
+    InterlockedAddFp32(accum, addr + 4, delta.y);
+    InterlockedAddFp32(accum, addr + 8, delta.z);
+    InterlockedAddFp32(accum, addr + 12, 1.0);
+}
+
+[numthreads(64, 1, 1)]
+void SolveShapes(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
+    if (threadIdx != 0)
+        return;
+
+    int begin = rigidOffsets[rigid];
+    int end = rigidOffsets[rigid + 1];
+    int count = end - begin;
+    if (count <= 0)
+        return;
+
+    float3 center = 0.0;
+    [loop]
+    for (int i = begin; i < end; ++i) {
+        uint sortedIndex = uint(reverseLookup[rigidIndices[i]]);
+        center += newPositions[sortedIndex].xyz;
+    }
+    center /= float(count);
+
+    float3 previousTranslation = translations[rigid];
+    if (abs(center.x - previousTranslation.x) < 1.0e-5)
+        center.x = previousTranslation.x;
+    if (abs(center.y - previousTranslation.y) < 1.0e-5)
+        center.y = previousTranslation.y;
+    if (abs(center.z - previousTranslation.z) < 1.0e-5)
+        center.z = previousTranslation.z;
+
+    float3 c0 = 0.0;
+    float3 c1 = 0.0;
+    float3 c2 = 0.0;
+    [loop]
+    for (int j = begin; j < end; ++j) {
+        uint sortedIndex = uint(reverseLookup[rigidIndices[j]]);
+        float3 currentOffset = newPositions[sortedIndex].xyz - center;
+        float3 local = localPositions[j];
+        c0 += currentOffset.x * local;
+        c1 += currentOffset.y * local;
+        c2 += currentOffset.z * local;
+    }
+
+    float4 rotation = ExtractRotation(c0, c1, c2, rotations[rigid]);
+    rotations[rigid] = rotation;
+    translations[rigid] = center;
+
+    float coefficient = rigidCoefficients[rigid];
+    [loop]
+    for (int k = begin; k < end; ++k) {
+        uint particle = uint(rigidIndices[k]);
+        uint sortedIndex = uint(reverseLookup[particle]);
+        float3 goal = center + Rotate(rotation, localPositions[k]);
+        float3 delta = (goal - newPositions[sortedIndex].xyz) * coefficient;
+        normals[particle] = float4(Rotate(rotation, localNormals[k].xyz), localNormals[k].w);
+        AccumulateDelta(sortedIndex, delta);
+    }
+}

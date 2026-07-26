@@ -1,0 +1,74 @@
+#include "KernelParams.hlsli"
+
+StructuredBuffer<int> collisionCounts : register(t0);
+StructuredBuffer<float4> collisionPlanes : register(t1);
+StructuredBuffer<float4> prevPositions : register(t2);
+StructuredBuffer<float4> collisionVelocities : register(t3);
+RWStructuredBuffer<float4> positions : register(u0);
+
+float3 ContactCorrection(float3 position, float3 relativePosition, float4 plane, float3 collisionVelocity, out bool penetrated) {
+    float separation = dot(position, plane.xyz) + plane.w;
+    float penetration = separation - gParams.kCollisionDistance;
+    float3 correction = (gParams.kAdhesion != 0.0) ? -plane.xyz * (separation * gParams.kAdhesion) : 0.0;
+    penetrated = penetration < 0.0;
+
+    if (penetrated) {
+        float3 normalCorrection = correction - penetration * plane.xyz;
+        bool frictionEnabled = gParams.kDynamicFriction > 0.0 && dot(plane.xyz, plane.xyz) > 0.0;
+
+        if (frictionEnabled) {
+            float3 relativeMotion = relativePosition - collisionVelocity;
+            float3 tangent = relativeMotion - dot(relativeMotion, plane.xyz) * plane.xyz;
+            float tangentSq = dot(tangent, tangent);
+
+            if (tangentSq > 0.0) {
+                float staticLimit = penetration * gParams.kStaticFriction;
+                float dynamicScale = min(-penetration * gParams.kDynamicFriction * rsqrt(tangentSq), 1.0);
+                float3 staticCorrection = normalCorrection - tangent;
+                float3 dynamicCorrection = normalCorrection - tangent * dynamicScale;
+                correction = (tangentSq < staticLimit * staticLimit) ? staticCorrection : dynamicCorrection;
+            } else {
+                correction = normalCorrection;
+            }
+        } else {
+            correction = normalCorrection;
+        }
+    }
+
+    return correction;
+}
+
+[numthreads(256, 1, 1)]
+void SolveContactsAveraged(uint idx : SV_DispatchThreadID) {
+    if (idx >= uint(gParams.kNumParticles))
+        return;
+
+    int count = collisionCounts[idx];
+    if (count == 0)
+        return;
+
+    float4 position = positions[idx];
+    if (position.w == 0.0)
+        return;
+
+    float3 relativePosition = position.xyz - prevPositions[idx].xyz;
+    float3 correctionSum = 0.0;
+    float penetrationCount = 0.0;
+
+    [loop]
+    for (int contact = count - 1; contact >= 0; --contact) {
+        uint contactIndex = idx * uint(gParams.kMaxContactsPerParticle) + uint(contact);
+        bool penetrated;
+        float3 correction = ContactCorrection(position.xyz,
+                                              relativePosition,
+                                              collisionPlanes[contactIndex],
+                                              collisionVelocities[contactIndex].xyz,
+                                              penetrated);
+        correctionSum += correction;
+        if (penetrated)
+            penetrationCount += 1.0;
+    }
+
+    if (penetrationCount > 0.0)
+        positions[idx].xyz = position.xyz + correctionSum / penetrationCount;
+}
