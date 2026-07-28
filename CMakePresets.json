@@ -1,0 +1,79 @@
+{
+    "version": 8,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "wine-clang",
+            "displayName": "Linux clang-cl / Windows x64",
+            "description": "Cross-build FleX Win64 DX11/DX12 binaries for Wine",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-clang-cl.cmake",
+            "cacheVariables": {
+                "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+                "NVFLEX_USE_MICROSOFT_VLD": false
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "wine-clang-debug",
+            "displayName": "FleX Wine Debug",
+            "configurePreset": "wine-clang",
+            "configuration": "Debug",
+            "targets": [
+                "NvFlexRev",
+                "NvFlexExt",
+                "DemoAppD3D"
+            ],
+            "jobs": 0
+        },
+        {
+            "name": "wine-clang-release",
+            "displayName": "FleX Wine Release",
+            "configurePreset": "wine-clang",
+            "configuration": "Release",
+            "targets": [
+                "NvFlexRev",
+                "NvFlexExt",
+                "DemoAppD3D"
+            ],
+            "jobs": 0
+        }
+    ],
+    "workflowPresets": [
+        {
+            "name": "wine-clang-debug",
+            "displayName": "Configure and build FleX Wine Debug",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "wine-clang"
+                },
+                {
+                    "type": "build",
+                    "name": "wine-clang-debug"
+                }
+            ]
+        },
+        {
+            "name": "wine-clang-release",
+            "displayName": "Configure and build FleX Wine Release",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "wine-clang"
+                },
+                {
+                    "type": "build",
+                    "name": "wine-clang-release"
+                }
+            ]
+        }
+    ]
+}

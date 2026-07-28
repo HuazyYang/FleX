@@ -3,9 +3,14 @@
 # windows
 *.exp
 *.ilk
-.vscode
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/settings.json
 .cache
 build
+.run
+.toolchains
 demo/compiler
 extensions/compiler
 src/dx/context
