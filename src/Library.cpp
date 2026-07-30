@@ -42,8 +42,8 @@ CMRC_DECLARE(nvflex);
 #include "ClearInt.hlsl.h"
 #include "ClearFloat4.hlsl.h"
 #include "ReorderParticles.hlsl.h"
-#include "CollideParticles.hlsl.h"
-#include "CollideShapes.hlsl.h"
+#include "CollideParticles.hlsl_rev.h"
+#include "CollideShapes.hlsl_rev.h"
 #include "ContinuousShockPropagation.hlsl.h"
 #include "CalculateDensity.hlsl_rev.h"
 #include "CalculateDensitySurfaceTension.hlsl_rev.h"
@@ -155,10 +155,12 @@ bool Library::Init(const NvFlexInitDesc* desc, NvFlexErrorCallback errorFunc) {
         mGpuVendorId = VENDOR_ID_OTHERS;
     }
 
-    mIsSHFLSupported = devCapabilities.isSHFLSupported;
-    mIsFP32ATOMICSupported = devCapabilities.isFp32AtomicSupported;
-    mIsSwizzleSupported = devCapabilities.isSwizzleSupported;
     mSMCount = -1;
+    const bool enableExtensions =
+        desc->enableExtensions && !(mGpuVendorId == VENDOR_ID_NVIDIA && mSMCount == -1);
+    mIsSHFLSupported = enableExtensions && devCapabilities.isSHFLSupported;
+    mIsFP32ATOMICSupported = enableExtensions && devCapabilities.isFp32AtomicSupported;
+    mIsSwizzleSupported = enableExtensions && devCapabilities.isSwizzleSupported;
 
     NvFlexFenceDesc fenceDesc = {};
     mSyncQuery = NvFlexCreateFence(mContext, &fenceDesc);

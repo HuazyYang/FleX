@@ -30,7 +30,7 @@ selection.
 
 ## Architecture
 
-FleX owns its workflow under `Tools/wine/`, with FleX-specific `NVFLEX_*`
+FleX owns its workflow under `scripts/wine/`, with FleX-specific `NVFLEX_*`
 environment variables. The scripts reuse the shared default 64-bit Wine prefix
 at `$HOME/.wineprefixes/dev-x64`, but users may select another prefix through
 `NVFLEX_WINEPREFIX`. Project downloads and integration files remain below the
@@ -77,11 +77,11 @@ fail before launch when one is unavailable.
 
 ## Toolchain and Prefix Workflow
 
-`Tools/wine/common.sh` centralizes the repository root, toolchain root, Wine
+`scripts/wine/common.sh` centralizes the repository root, toolchain root, Wine
 prefix, Visual Studio root, Windows SDK root, command resolution, and diagnostic
 helpers.
 
-`Tools/wine/bootstrap-toolchain.sh --check` validates:
+`scripts/wine/bootstrap-toolchain.sh --check` validates:
 
 - CMake, Ninja, LLVM 19, Wine, WinePath, WineDbg, GDB, Git, Python, curl, tar,
   unzip, and the `msvc-wine` integration;
@@ -92,7 +92,7 @@ helpers.
 files with the same explicit Microsoft-license gate used by WaveWorks. It is
 idempotent and does not install host packages.
 
-`Tools/wine/check-prefix.sh` requires a win64 prefix, native `d3d11`, `dxgi`,
+`scripts/wine/check-prefix.sh` requires a win64 prefix, native `d3d11`, `dxgi`,
 `d3d12`, and `d3d12core` overrides, and the corresponding DLLs in
 `drive_c/windows/system32`. The same prefix can be shared by WaveWorks and FleX
 because neither project exports `WINEPREFIX` globally or writes project output
@@ -100,7 +100,7 @@ into the prefix.
 
 ## Run and Debug Behavior
 
-`Tools/wine/run-demo.sh` accepts:
+`scripts/wine/run-demo.sh` accepts:
 
 - `--config Debug|Release`, defaulting to `Debug`;
 - `--rhi d3d11|dx11|d3d12|dx12`, defaulting to `d3d11`;
@@ -124,7 +124,7 @@ startup failure. Reaching the end of the interval causes a normal bounded
 termination and counts as startup success. The process is first asked to
 terminate, then force-stopped only if it does not exit promptly.
 
-`Tools/wine/debug-server.sh` launches the Debug executable through WineDbg's GDB
+`scripts/wine/debug-server.sh` launches the Debug executable through WineDbg's GDB
 remote proxy with matching DX11 or DX12 arguments. VS Code uses `cppdbg`, GDB,
 separate backend ports, DWARF symbols, and restricted system-library symbol
 loading.

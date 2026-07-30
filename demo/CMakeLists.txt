@@ -5,7 +5,7 @@ set(DemoAppD3D_OUTNAME
     "NvFlexDemo$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:Debug>$<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:Release>D3D_win64")
 
 file(GLOB DemoAppD3D_SOURCES
-    "*.h" "*.cpp"
+    "*.h" "*.cpp" "*.c"
     "d3d/*.h" "d3d/*.cpp"
     "d3d11/*.h" "d3d11/*.cpp"
     "d3d12/*.h" "d3d12/*.cpp"
@@ -35,33 +35,31 @@ target_include_directories(DemoAppD3D PRIVATE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/d3d12>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>"
 )
 target_compile_definitions(DemoAppD3D PRIVATE
     "_CRT_SECURE_NO_WARNINGS"
-    "FLEX_DX"
-    "FLEX_DX12"
     "_ITERATOR_DEBUG_LEVEL=0"
 )
 
-if(NVFLEX_USE_REVERSED_LIB)
-    target_link_libraries(DemoAppD3D PRIVATE SDL2 SDL2main stb NvFlexRev NvFlexExt)
-    target_compile_definitions(DemoAppD3D PRIVATE "NVFLEX_USE_REVERSED_LIB=1")
-else()
-    target_link_libraries(DemoAppD3D PRIVATE SDL2 SDL2main stb NvFlexLib NvFlexExt)
-endif()
+target_link_libraries(DemoAppD3D PRIVATE SDL2 SDL2main stb NvFlexLib NvFlexExt)
+add_dependencies(DemoAppD3D NvFlexLib NvFlexRev DemoAppD3DShaders)
 
 if(NVFLEX_USE_MICROSOFT_VLD)
     target_link_libraries(DemoAppD3D PRIVATE vld)
     target_compile_definitions(DemoAppD3D PRIVATE "NVFLEX_USE_MICROSOFT_VLD=1")
 endif()
 
-add_dependencies(DemoAppD3D DemoAppD3DShaders)
-
 add_custom_command(
     TARGET DemoAppD3D
     POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
         "$<TARGET_FILE:NvFlexLib>"
+        "$<TARGET_FILE:NvFlexRev>"
+        "$<TARGET_FILE:NvFlexExt>"
         "$<TARGET_FILE:SDL2>"
+        "$<TARGET_FILE:NVTX>"
+        "$<TARGET_FILE:AGS>"
+        "${CMAKE_SOURCE_DIR}/bin/win64/GFSDK_Aftermath_Lib.x64.dll"
         "$<TARGET_FILE_DIR:DemoAppD3D>"
     )

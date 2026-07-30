@@ -24,36 +24,30 @@
 // NVIDIA Corporation.
 //
 // Copyright (c) 2013-2020 NVIDIA Corporation. All rights reserved.
-
-
-#if NVFLEX_USE_REVERSED_LIB
-
 #include "core/core.h"
 #include "core/maths.h"
 
-#include "include/NvFlex.h"
-#include "include/NvFlexExt.h"
-#include <nvflex/NvFlexContext.h>
-#include <nvflex/NvFlexContextExt.h>
+#include <NvFlex.h>
+#include <NvFlexExt.h>
 
 #include "flexExt_dx_common.h"
 
-using BYTE = uint8_t;
+using BYTE = unsigned char;
 #include "shaders/flexExt.UpdateForceFields.hlsl.h"
 
-struct NvFlexExtForceFieldCallback {
-    NvFlexExtForceFieldCallback(NvFlexSolver* solver)
+struct NvFlexExtForceFieldCallback {};
+
+struct NvFlexExtForceFieldCallbackREV : NvFlexExtForceFieldCallback {
+    NvFlexExtForceFieldCallbackREV(NvFlexSolver* solver)
         : mSolver(solver) {
         // force fields
         mMaxForceFields = 0;
         mNumForceFields = 0;
 
-        mForceFieldsGpu = NULL;
-
-        mContext = NULL;
+        mForceFieldsGpu2 = NULL;
 
         NvFlexLibrary* lib = NvFlexGetSolverLibrary(solver);
-        NvFlexGetDeviceAndContext(lib, nullptr, (void**)&mContext);
+        NvFlexGetDeviceAndContext(lib, nullptr, (void**)&mContext2);
 
         {
             // force field shader
@@ -63,7 +57,7 @@ struct NvFlexExtForceFieldCallback {
             desc.label = L"NvFlexExtForceFieldCallback";
             desc.NVAPI_Slot = 0;
 
-            mShaderUpdateForceFields = NvFlexCreateComputeShader(mContext, &desc);
+            mShaderUpdateForceFields2 = NvFlexCreateComputeShader(mContext2, &desc);
         }
 
         {
@@ -72,276 +66,278 @@ struct NvFlexExtForceFieldCallback {
             desc.sizeInBytes = 4 * sizeof(int);
             desc.uploadAccess = true;
 
-            mConstantBuffer = NvFlexCreateConstantBuffer(mContext, &desc);
+            mConstantBuffer2 = NvFlexCreateConstantBuffer(mContext2, &desc);
         }
     }
 
-    ~NvFlexExtForceFieldCallback() {
+    ~NvFlexExtForceFieldCallbackREV() {
         // force fields
-        NvFlexReleaseBuffer(mForceFieldsGpu);
-        NvFlexReleaseConstantBuffer(mConstantBuffer);
-        NvFlexReleaseComputeShader(mShaderUpdateForceFields);
+        NvFlexReleaseBuffer(mForceFieldsGpu2);
+        NvFlexReleaseConstantBuffer(mConstantBuffer2);
+        NvFlexReleaseComputeShader(mShaderUpdateForceFields2);
     }
 
-    NvFlexBuffer* mForceFieldsGpu;
+    void applyForceFields(const NvFlexSolverCallbackParams& params) {
+        // callbacks always have the correct CUDA device set so we can safely launch kernels
+        // without acquiring
+
+        if (params.numActive && mNumForceFields) {
+            const unsigned int numThreadsPerBlock = 256;
+            const unsigned int kNumBlocks =
+                (params.numActive + numThreadsPerBlock - 1) / numThreadsPerBlock;
+
+            NvFlexBuffer* particles = (NvFlexBuffer*)params.particles;
+            NvFlexBuffer* velocities = (NvFlexBuffer*)params.velocities;
+
+            // Init constant buffer
+            {
+                FlexExtConstParams constBuffer;
+
+                constBuffer.kNumParticles = params.numActive;
+                constBuffer.kNumForceFields = mNumForceFields;
+                constBuffer.kDt = params.dt;
+
+                auto vptr = NvFlexConstantBufferMap(mContext2, mConstantBuffer2);
+                memcpy(vptr, &constBuffer, sizeof(constBuffer));
+                NvFlexConstantBufferUnmap(mContext2, mConstantBuffer2);
+            }
+
+            {
+                NvFlexDispatchParams params = {};
+                params.shader = mShaderUpdateForceFields2;
+                params.readWrite[0] = NvFlexBufferGetResourceRW(velocities);
+                params.readOnly[0] = NvFlexBufferGetResource(particles);
+                params.readOnly[1] = NvFlexBufferGetResource(mForceFieldsGpu2);
+                params.gridDim = {kNumBlocks, 1, 1};
+                params.rootConstantBuffer = mConstantBuffer2;
+
+                NvFlexContextDispatch(mContext2, &params);
+            }
+        }
+    }
+
+    void registerToSolver(const NvFlexExtForceField* forceFields, int numForceFields) {
+        // re-alloc if necessary
+        if (numForceFields > mMaxForceFields) {
+            NvFlexReleaseBuffer(mForceFieldsGpu2);
+
+            NvFlexBufferDesc desc{};
+            desc.dim = numForceFields;
+            desc.structStride = sizeof(NvFlexExtForceField);
+
+            mForceFieldsGpu2 = NvFlexCreateBuffer(mContext2, &desc);
+
+            mMaxForceFields = numForceFields;
+        }
+        mNumForceFields = numForceFields;
+
+        if (numForceFields > 0) {
+            // upload staging buffer
+            NvFlexContextUploadBuffer(mContext2, mForceFieldsGpu2, 0, forceFields,
+                                      numForceFields * sizeof(NvFlexExtForceField));
+        }
+
+        NvFlexSolverCallback callback;
+        callback.function = [](NvFlexSolverCallbackParams c) {
+            static_cast<NvFlexExtForceFieldCallbackREV*>(c.userData)->applyForceFields(c);
+        };
+        callback.userData = this;
+
+        // register a callback to calculate the forces at the end of the time-step
+        NvFlexRegisterSolverCallback(mSolver, callback, eNvFlexStageUpdateEnd);
+    }
+
+    NvFlexBuffer* mForceFieldsGpu2;
 
     // DX Specific
-    NvFlexComputeShader* mShaderUpdateForceFields;
-    NvFlexConstantBuffer* mConstantBuffer;
+    NvFlexComputeShader* mShaderUpdateForceFields2;
+    NvFlexConstantBuffer* mConstantBuffer2;
 
     int mMaxForceFields;
     int mNumForceFields;
 
     // D3D device and context wrappers for the solver library
-    // NvFlex::Device* mDevice;
-    NvFlexContext* mContext;
+    NvFlexContext* mContext2;
+
+    NvFlexSolver* mSolver;
+};
+
+#undef NV_FLEX_DRAW_MAX_READ_TEXTURES
+
+#include "context/Context.h"
+#include "context/Device.h"
+
+struct NvFlexExtForceFieldCallbackORG : NvFlexExtForceFieldCallback {
+    NvFlexExtForceFieldCallbackORG(NvFlexSolver* solver)
+        : mSolver(solver) {
+        // force fields
+        mMaxForceFields = 0;
+        mNumForceFields = 0;
+
+        mForceFieldsGpu = NULL;
+
+        mDevice = NULL;
+        mContext = NULL;
+
+        NvFlexLibrary* lib = NvFlexGetSolverLibrary(solver);
+        NvFlexGetDeviceAndContext(lib, (void**)&mDevice, (void**)&mContext);
+
+        {
+            // force field shader
+            NvFlex::ComputeShaderDesc desc{};
+            desc.cs = (void*)g_flexExt_UpdateForceFields;
+            desc.cs_length = sizeof(g_flexExt_UpdateForceFields);
+            desc.label = L"NvFlexExtForceFieldCallback";
+            desc.NvAPI_Slot = 0;
+
+            mShaderUpdateForceFields = mContext->createComputeShader(&desc);
+        }
+
+        {
+            // constant buffer
+            NvFlex::ConstantBufferDesc desc;
+            desc.stride = sizeof(int);
+            desc.dim = 4;
+            desc.uploadAccess = true;
+
+            mConstantBuffer = mContext->createConstantBuffer(&desc);
+        }
+    }
+
+    ~NvFlexExtForceFieldCallbackORG() {
+        // force fields
+        delete mForceFieldsGpu;
+        delete mConstantBuffer;
+        delete mShaderUpdateForceFields;
+    }
+
+    void applyForceFields(const NvFlexSolverCallbackParams& params) {
+        // callbacks always have the correct CUDA device set so we can safely launch kernels
+        // without acquiring
+
+        if (params.numActive && mNumForceFields) {
+            const unsigned int numThreadsPerBlock = 256;
+            const unsigned int kNumBlocks =
+                (params.numActive + numThreadsPerBlock - 1) / numThreadsPerBlock;
+
+            NvFlex::Buffer* particles = (NvFlex::Buffer*)params.particles;
+            NvFlex::Buffer* velocities = (NvFlex::Buffer*)params.velocities;
+
+            // Init constant buffer
+            {
+                FlexExtConstParams constBuffer;
+
+                constBuffer.kNumParticles = params.numActive;
+                constBuffer.kNumForceFields = mNumForceFields;
+                constBuffer.kDt = params.dt;
+
+                memcpy(mContext->map(mConstantBuffer), &constBuffer,
+                       sizeof(FlexExtConstParams));
+                mContext->unmap(mConstantBuffer);
+            }
+
+            {
+                NvFlex::DispatchParams params = {};
+                params.shader = mShaderUpdateForceFields;
+                params.readWrite[0] = velocities->getResourceRW();
+                params.readOnly[0] = particles->getResource();
+                params.readOnly[1] = mForceFieldsGpu->getResource();
+                params.gridDim = {kNumBlocks, 1, 1};
+                params.rootConstantBuffer = mConstantBuffer;
+
+                mContext->dispatch(&params);
+            }
+        }
+    }
+
+    void registerToSolver(const NvFlexExtForceField* forceFields, int numForceFields) {
+        // re-alloc if necessary
+        if (numForceFields > mMaxForceFields) {
+            delete mForceFieldsGpu;
+
+            NvFlex::BufferDesc desc{};
+            desc.dim = numForceFields;
+            desc.stride = sizeof(NvFlexExtForceField);
+            desc.bufferType =
+                NvFlex::eBuffer | NvFlex::eUAV_SRV | NvFlex::eStructured | NvFlex::eStage;
+            desc.format = NvFlexFormat::eNvFlexFormat_unknown;
+            desc.data = NULL;
+
+            mForceFieldsGpu = mContext->createBuffer(&desc);
+
+            mMaxForceFields = numForceFields;
+        }
+        mNumForceFields = numForceFields;
+
+        if (numForceFields > 0) {
+            // update staging buffer
+            void* dstPtr = mContext->map(mForceFieldsGpu, NvFlex::eMapWrite);
+            memcpy(dstPtr, forceFields, numForceFields * sizeof(NvFlexExtForceField));
+            mContext->unmap(mForceFieldsGpu);
+
+            // upload to device buffer
+            mContext->upload(mForceFieldsGpu, 0,
+                             numForceFields * sizeof(NvFlexExtForceField));
+        }
+
+        NvFlexSolverCallback callback;
+        callback.function = [](NvFlexSolverCallbackParams c) {
+            static_cast<NvFlexExtForceFieldCallbackORG*>(c.userData)->applyForceFields(c);
+        };
+        callback.userData = this;
+
+        // register a callback to calculate the forces at the end of the time-step
+        NvFlexRegisterSolverCallback(mSolver, callback, eNvFlexStageUpdateEnd);
+    }
+
+    union {
+        NvFlex::Buffer* mForceFieldsGpu;
+        NvFlexBuffer* mForceFieldsGpu2;
+    };
+
+    // DX Specific
+    union {
+        NvFlex::ComputeShader* mShaderUpdateForceFields;
+        NvFlexComputeShader* mShaderUpdateForceFields2;
+    };
+    union {
+        NvFlex::ConstantBuffer* mConstantBuffer;
+        NvFlexConstantBuffer* mConstantBuffer2;
+    };
+
+    int mMaxForceFields;
+    int mNumForceFields;
+
+    // D3D device and context wrappers for the solver library
+    NvFlex::Device* mDevice;
+    union {
+        NvFlex::Context* mContext;
+        NvFlexContext* mContext2;
+    };
 
     NvFlexSolver* mSolver;
 };
 
 NvFlexExtForceFieldCallback* NvFlexExtCreateForceFieldCallback(NvFlexSolver* solver) {
-    return new NvFlexExtForceFieldCallback(solver);
+    if(NvFlexRuntime::Get().GetBackend() == NvFlexRuntime::eBackendPublic)
+        return new NvFlexExtForceFieldCallbackORG(solver);
+    else
+        return new NvFlexExtForceFieldCallbackREV(solver);
 }
 
 void NvFlexExtDestroyForceFieldCallback(NvFlexExtForceFieldCallback* callback) {
-    delete callback;
-}
-
-void ApplyForceFieldsCallback(NvFlexSolverCallbackParams params) {
-    // callbacks always have the correct CUDA device set so we can safely launch kernels
-    // without acquiring
-
-    NvFlexExtForceFieldCallback* c = (NvFlexExtForceFieldCallback*)params.userData;
-
-    if (params.numActive && c->mNumForceFields) {
-        const unsigned int numThreadsPerBlock = 256;
-        const unsigned int kNumBlocks =
-            (params.numActive + numThreadsPerBlock - 1) / numThreadsPerBlock;
-
-        NvFlexBuffer* particles = (NvFlexBuffer*)params.particles;
-        NvFlexBuffer* velocities = (NvFlexBuffer*)params.velocities;
-
-        // Init constant buffer
-        {
-            FlexExtConstParams constBuffer;
-
-            constBuffer.kNumParticles = params.numActive;
-            constBuffer.kNumForceFields = c->mNumForceFields;
-            constBuffer.kDt = params.dt;
-
-            auto vptr = NvFlexConstantBufferMap(c->mContext, c->mConstantBuffer);
-            memcpy(vptr, &constBuffer, sizeof(constBuffer));
-            NvFlexConstantBufferUnmap(c->mContext, c->mConstantBuffer);
-        }
-
-        {
-            NvFlexDispatchParams params = {};
-            params.shader = c->mShaderUpdateForceFields;
-            params.readWrite[0] = NvFlexBufferGetResourceRW(velocities);
-            params.readOnly[0] = NvFlexBufferGetResource(particles);
-            params.readOnly[1] = NvFlexBufferGetResource(c->mForceFieldsGpu);
-            params.gridDim = {kNumBlocks, 1, 1};
-            params.rootConstantBuffer = c->mConstantBuffer;
-
-            NvFlexContextDispatch(c->mContext, &params);
-        }
-    }
+    if (NvFlexRuntime::Get().GetBackend() == NvFlexRuntime::eBackendPublic)
+        delete static_cast<NvFlexExtForceFieldCallbackORG *>(callback);
+    else
+        delete static_cast < NvFlexExtForceFieldCallbackREV*>(callback);
 }
 
 void NvFlexExtSetForceFields(NvFlexExtForceFieldCallback* c,
                              const NvFlexExtForceField* forceFields, int numForceFields) {
-    // re-alloc if necessary
-    if (numForceFields > c->mMaxForceFields) {
-        NvFlexReleaseBuffer(c->mForceFieldsGpu);
-
-        NvFlexBufferDesc desc{};
-        desc.dim = numForceFields;
-        desc.structStride = sizeof(NvFlexExtForceField);
-
-        c->mForceFieldsGpu = NvFlexCreateBuffer(c->mContext, &desc);
-
-        c->mMaxForceFields = numForceFields;
-    }
-    c->mNumForceFields = numForceFields;
-
-    if (numForceFields > 0) {
-        // upload staging buffer
-        NvFlexContextUploadBuffer(c->mContext, c->mForceFieldsGpu, 0, forceFields, numForceFields * sizeof(NvFlexExtForceField));
-    }
-
-    NvFlexSolverCallback callback;
-    callback.function = ApplyForceFieldsCallback;
-    callback.userData = c;
-
-    // register a callback to calculate the forces at the end of the time-step
-    NvFlexRegisterSolverCallback(c->mSolver, callback, eNvFlexStageUpdateEnd);
+    if (NvFlexRuntime::Get().GetBackend() == NvFlexRuntime::eBackendPublic)
+        static_cast<NvFlexExtForceFieldCallbackORG*>(c)->registerToSolver(forceFields,
+                                                                          numForceFields);
+    else
+        static_cast<NvFlexExtForceFieldCallbackREV*>(c)->registerToSolver(forceFields,
+                                                                          numForceFields);
 }
-
-#else
-
-#include "core/core.h"
-#include "core/maths.h"
-
-#include "include/NvFlex.h"
-#include "include/NvFlexExt.h"
-
-#include "src/dx/context/context.h"
-#include "src/dx/context/device.h"
-
-#include "flexExt_dx_common.h"
-
-#include "shaders/flexExt.UpdateForceFields.hlsl.h"
-
-struct NvFlexExtForceFieldCallback
-{
-	NvFlexExtForceFieldCallback(NvFlexSolver* solver) : mSolver(solver)
-	{
-		// force fields
-		mMaxForceFields = 0;
-		mNumForceFields = 0;
-		
-		mForceFieldsGpu = NULL;
-
-		mDevice = NULL;
-		mContext = NULL;
-
-		NvFlexLibrary* lib = NvFlexGetSolverLibrary(solver);
-		NvFlexGetDeviceAndContext(lib, (void**)&mDevice, (void**)&mContext);
-
-		{
-			// force field shader
-			NvFlex::ComputeShaderDesc desc{};
-			desc.cs = (void*)g_flexExt_UpdateForceFields;
-			desc.cs_length = sizeof(g_flexExt_UpdateForceFields);
-			desc.label = L"NvFlexExtForceFieldCallback";
-			desc.NvAPI_Slot = 0;
-
-			mShaderUpdateForceFields = mContext->createComputeShader(&desc);
-		}
-
-		{
-			// constant buffer
-			NvFlex::ConstantBufferDesc desc;
-			desc.stride = sizeof(int);
-			desc.dim = 4;
-			desc.uploadAccess = true;
-			
-			mConstantBuffer = mContext->createConstantBuffer(&desc);
-		}
-	}
-
-	~NvFlexExtForceFieldCallback()
-	{
-		// force fields
-		delete mForceFieldsGpu;
-		delete mConstantBuffer;
-		delete mShaderUpdateForceFields;
-	}
-	
-	NvFlex::Buffer* mForceFieldsGpu;
-
-	// DX Specific
-	NvFlex::ComputeShader* mShaderUpdateForceFields;
-	NvFlex::ConstantBuffer* mConstantBuffer;
-
-	int mMaxForceFields;
-	int mNumForceFields;
-
-	// D3D device and context wrappers for the solver library
-	NvFlex::Device* mDevice;
-	NvFlex::Context* mContext;
-
-	NvFlexSolver* mSolver;
-
-};
-
-NvFlexExtForceFieldCallback* NvFlexExtCreateForceFieldCallback(NvFlexSolver* solver)
-{
-	return new NvFlexExtForceFieldCallback(solver);	
-}
-
-void NvFlexExtDestroyForceFieldCallback(NvFlexExtForceFieldCallback* callback)
-{
-	delete callback;
-}
-
-void ApplyForceFieldsCallback(NvFlexSolverCallbackParams params)
-{
-	// callbacks always have the correct CUDA device set so we can safely launch kernels without acquiring
-
-	NvFlexExtForceFieldCallback* c = (NvFlexExtForceFieldCallback*)params.userData;
-
-	if (params.numActive && c->mNumForceFields)
-	{
-		const unsigned int numThreadsPerBlock = 256;
-		const unsigned int kNumBlocks = (params.numActive + numThreadsPerBlock - 1) / numThreadsPerBlock;
-
-		NvFlex::Buffer* particles = (NvFlex::Buffer*)params.particles;
-		NvFlex::Buffer* velocities = (NvFlex::Buffer*)params.velocities;
-
-		// Init constant buffer
-		{
-			FlexExtConstParams constBuffer;
-
-			constBuffer.kNumParticles = params.numActive;
-			constBuffer.kNumForceFields = c->mNumForceFields;
-			constBuffer.kDt = params.dt;
-
-			memcpy(c->mContext->map(c->mConstantBuffer), &constBuffer, sizeof(FlexExtConstParams));
-			c->mContext->unmap(c->mConstantBuffer);
-		}
-
-		{
-			NvFlex::DispatchParams params = {};
-			params.shader = c->mShaderUpdateForceFields;
-			params.readWrite[0] = velocities->getResourceRW();
-			params.readOnly[0] = particles->getResource();
-			params.readOnly[1] = c->mForceFieldsGpu->getResource();
-			params.gridDim = { kNumBlocks , 1, 1 };
-			params.rootConstantBuffer = c->mConstantBuffer;
-
-			c->mContext->dispatch(&params);
-		}
-	}
-}
-
-void NvFlexExtSetForceFields(NvFlexExtForceFieldCallback* c, const NvFlexExtForceField* forceFields, int numForceFields)
-{
-	// re-alloc if necessary
-	if (numForceFields > c->mMaxForceFields)
-	{
-		delete c->mForceFieldsGpu;
-
-		NvFlex::BufferDesc desc {};
-		desc.dim = numForceFields;
-		desc.stride = sizeof(NvFlexExtForceField);
-		desc.bufferType = NvFlex::eBuffer | NvFlex::eUAV_SRV | NvFlex::eStructured | NvFlex::eStage; 
-		desc.format = NvFlexFormat::eNvFlexFormat_unknown;
-		desc.data = NULL;
-	
-		c->mForceFieldsGpu = c->mContext->createBuffer(&desc);
-
-		c->mMaxForceFields = numForceFields;
-	}
-	c->mNumForceFields = numForceFields;
-
-	if (numForceFields > 0)
-	{
-		// update staging buffer
-		void* dstPtr = c->mContext->map(c->mForceFieldsGpu, NvFlex::eMapWrite);
-		memcpy(dstPtr, forceFields, numForceFields*sizeof(NvFlexExtForceField));
-		c->mContext->unmap(c->mForceFieldsGpu);
-
-		// upload to device buffer
-		c->mContext->upload(c->mForceFieldsGpu, 0, numForceFields*sizeof(NvFlexExtForceField));
-
-	}
-
-	NvFlexSolverCallback callback;
-	callback.function = ApplyForceFieldsCallback;
-	callback.userData = c;
-
-	// register a callback to calculate the forces at the end of the time-step
-	NvFlexRegisterSolverCallback(c->mSolver, callback, eNvFlexStageUpdateEnd);
-}
-#endif

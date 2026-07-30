@@ -40,6 +40,7 @@ enum NvFlexResult
 
 typedef int NvFlexInt;
 typedef unsigned int NvFlexUint;
+typedef float NvFlexFloat;
 typedef unsigned long long NvFlexUint64;
 
 struct NvFlexDim
@@ -97,46 +98,45 @@ struct NvFlexFloat4x4
 	NvFlexFloat4 x, y, z, w;
 };
 
-enum NvFlexFormat
-{
-	eNvFlexFormat_unknown = 0,
+enum NvFlexFormat {
+    eNvFlexFormat_unknown = 0,
 
-	eNvFlexFormat_r32_float = 1,
-	eNvFlexFormat_r32g32_float = 2,
-	eNvFlexFormat_r32g32b32a32_float = 3,
+    eNvFlexFormat_r32_typeless = 1,
 
-	eNvFlexFormat_r16_float = 4,
-	eNvFlexFormat_r16g16_float = 5,
-	eNvFlexFormat_r16g16b16a16_float = 6,
+    eNvFlexFormat_r32_float = 2,
+    eNvFlexFormat_r32g32_float = 3,
+    eNvFlexFormat_r32g32b32a32_float = 4,
 
-	eNvFlexFormat_r32_uint = 7,
-	eNvFlexFormat_r32g32_uint = 8,
-	eNvFlexFormat_r32g32b32a32_uint = 9,
+    eNvFlexFormat_r16_float = 5,
+    eNvFlexFormat_r16g16_float = 6,
+    eNvFlexFormat_r16g16b16a16_float = 7,
 
-	eNvFlexFormat_r8_unorm = 10,
-	eNvFlexFormat_r8g8_unorm = 11,
-	eNvFlexFormat_r8g8b8a8_unorm = 12,
+    eNvFlexFormat_r32_uint = 8,
+    eNvFlexFormat_r32g32_uint = 9,
+    eNvFlexFormat_r32g32b32a32_uint = 10,
 
-	eNvFlexFormat_r16_unorm = 13,
-	eNvFlexFormat_r16g16_unorm = 14,
-	eNvFlexFormat_r16g16b16a16_unorm = 15,
+    eNvFlexFormat_r8_unorm = 11,
+    eNvFlexFormat_r8g8_unorm = 12,
+    eNvFlexFormat_r8g8b8a8_unorm = 13,
 
-	eNvFlexFormat_d32_float = 16,
-	eNvFlexFormat_d24_unorm_s8_uint = 17,
+    eNvFlexFormat_r16_unorm = 14,
+    eNvFlexFormat_r16g16_unorm = 15,
+    eNvFlexFormat_r16g16b16a16_unorm = 16,
 
-	eNvFlexFormat_r8_snorm = 18,
-	eNvFlexFormat_r8g8_snorm = 19,
-	eNvFlexFormat_r8g8b8a8_snorm = 20,
+    eNvFlexFormat_d32_float = 17,
+    eNvFlexFormat_d24_unorm_s8_uint = 18,
 
-	eNvFlexFormat_r32_typeless = 21,
-	eNvFlexFormat_r24_unorm_x8_typeless = 22,
-	eNvFlexFormat_r24g8_typeless = 23,
+    eNvFlexFormat_r8_snorm = 19,
+    eNvFlexFormat_r8g8_snorm = 20,
+    eNvFlexFormat_r8g8b8a8_snorm = 21,
 
-	eNvFlexFormat_r16_typeless = 24,
-	eNvFlexFormat_d16_unorm = 25,
+    eNvFlexFormat_r24_unorm_x8_typeless = 23,
+    eNvFlexFormat_r24g8_typeless = 24,
 
-	eNvFlexFormat_max
+    eNvFlexFormat_r16_typeless = 25,
+    eNvFlexFormat_d16_unorm = 26,
+
+    eNvFlexFormat_max
 };
-
 
 #endif /* NVFLEXTYPES_H */

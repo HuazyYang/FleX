@@ -7,6 +7,30 @@
     },
     "configurePresets": [
         {
+            "name": "msvc-ninja",
+            "displayName": "MSVC / Ninja Multi-Config",
+            "description": "Native Windows build with Visual Studio 2022 x64 tools",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "installDir": "${sourceDir}/install/${presetName}",
+            "vendor": {
+                "microsoft": {
+                    "visualStudio": {
+                        "version": "17.0",
+                        "architecture": {
+                            "value": "x64",
+                            "strategy": "set"
+                        }
+                    }
+                }
+            },
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl.exe",
+                "CMAKE_CXX_COMPILER": "cl.exe",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true
+            }
+        },
+        {
             "name": "wine-clang",
             "displayName": "Linux clang-cl / Windows x64",
             "description": "Cross-build FleX Win64 DX11/DX12 binaries for Wine",
@@ -21,6 +45,18 @@
         }
     ],
     "buildPresets": [
+        {
+            "name": "msvc-ninja-debug",
+            "displayName": "MSVC Debug",
+            "configurePreset": "msvc-ninja",
+            "configuration": "Debug"
+        },
+        {
+            "name": "msvc-ninja-release",
+            "displayName": "MSVC Release",
+            "configurePreset": "msvc-ninja",
+            "configuration": "Release"
+        },
         {
             "name": "wine-clang-debug",
             "displayName": "FleX Wine Debug",

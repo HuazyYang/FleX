@@ -67,7 +67,7 @@ Run:
 ./test/TestWineWorkflow.sh
 ```
 
-Expected: failure naming the first missing `Tools/wine` script or
+Expected: failure naming the first missing `scripts/wine` script or
 `CMakePresets.json`.
 
 - [ ] **Step 3: Commit the test contract**
@@ -80,15 +80,15 @@ git commit -m "Test FleX Wine workflow"
 ### Task 2: FleX Toolchain and Presets
 
 **Files:**
-- Create: `Tools/wine/common.sh`
-- Create: `Tools/wine/bootstrap-toolchain.sh`
-- Create: `Tools/wine/clang-cl.sh`
-- Create: `Tools/wine/lld-link.sh`
-- Create: `Tools/wine/llvm-lib.sh`
-- Create: `Tools/wine/llvm-mt.sh`
-- Create: `Tools/wine/llvm-rc.sh`
-- Create: `Tools/wine/fxc.sh`
-- Create: `Tools/wine/wine-shader-tool.sh`
+- Create: `scripts/wine/common.sh`
+- Create: `scripts/wine/bootstrap-toolchain.sh`
+- Create: `scripts/wine/clang-cl.sh`
+- Create: `scripts/wine/lld-link.sh`
+- Create: `scripts/wine/llvm-lib.sh`
+- Create: `scripts/wine/llvm-mt.sh`
+- Create: `scripts/wine/llvm-rc.sh`
+- Create: `scripts/wine/fxc.sh`
+- Create: `scripts/wine/wine-shader-tool.sh`
 - Create: `cmake/toolchains/windows-clang-cl.cmake`
 - Create: `CMakePresets.json`
 - Modify: `.gitignore`
@@ -170,7 +170,7 @@ prefix/run workflow.
 - [ ] **Step 7: Commit the toolchain**
 
 ```bash
-git add .gitignore CMakePresets.json Tools/wine cmake/toolchains/windows-clang-cl.cmake
+git add .gitignore CMakePresets.json scripts/wine cmake/toolchains/windows-clang-cl.cmake
 git commit -m "Add FleX Win64 cross toolchain"
 ```
 
@@ -245,10 +245,10 @@ git commit -m "Build FleX Win64 targets on Linux"
 ### Task 4: Prefix, Run, Smoke, and Debug Workflow
 
 **Files:**
-- Create: `Tools/wine/check-prefix.sh`
-- Create: `Tools/wine/run-demo.sh`
-- Create: `Tools/wine/debug-server.sh`
-- Create: `Tools/wine/README.md`
+- Create: `scripts/wine/check-prefix.sh`
+- Create: `scripts/wine/run-demo.sh`
+- Create: `scripts/wine/debug-server.sh`
+- Create: `scripts/wine/README.md`
 - Modify: `.vscode/tasks.json`
 - Modify: `.vscode/launch.json`
 - Modify: `.vscode/settings.json`
@@ -305,7 +305,7 @@ Use ports 31337 and 31338, `launchCompleteCommand: "None"`, and
 - [ ] **Step 5: Document the workflow**
 
 Add concise host setup, provision/check, configure/build, run/smoke, and debug
-commands to `Tools/wine/README.md`, and link it from the root README without
+commands to `scripts/wine/README.md`, and link it from the root README without
 rewriting unrelated legacy documentation.
 
 - [ ] **Step 6: Run the complete contract**
@@ -322,7 +322,7 @@ Expected: `FleX Wine workflow contract tests passed.`
 
 ```bash
 git add -f .vscode/tasks.json .vscode/launch.json .vscode/settings.json
-git add .gitignore README.md Tools/wine test/TestWineWorkflow.sh test/fakes/fake-wine.sh
+git add .gitignore README.md scripts/wine test/TestWineWorkflow.sh test/fakes/fake-wine.sh
 git commit -m "Add FleX Wine run workflow"
 ```
 
@@ -340,8 +340,8 @@ git commit -m "Add FleX Wine run workflow"
 Run:
 
 ```bash
-./Tools/wine/bootstrap-toolchain.sh --check
-./Tools/wine/check-prefix.sh
+./scripts/wine/bootstrap-toolchain.sh --check
+./scripts/wine/check-prefix.sh
 ```
 
 Expected: both commands report ready state with the exact selected paths.
@@ -368,7 +368,7 @@ PE/COFF format and expected D3D/runtime imports.
 Run:
 
 ```bash
-./Tools/wine/run-demo.sh \
+./scripts/wine/run-demo.sh \
     --config Debug --rhi d3d11 --dev 1 --smoke-seconds 10
 ```
 
@@ -380,7 +380,7 @@ by the runner, and the DXVK log has no initialization failure.
 Run:
 
 ```bash
-./Tools/wine/run-demo.sh \
+./scripts/wine/run-demo.sh \
     --config Debug --rhi d3d12 --dev 1 --smoke-seconds 10
 ```
 

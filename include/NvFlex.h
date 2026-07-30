@@ -40,6 +40,8 @@
 // least 2 significant digits define minor version, eg: 10 -> version 0.10
 #define NV_FLEX_VERSION 120
 
+#define NVFLEX_REV_API NV_FLEX_API
+
 //! \endcond
 
 /** \file NvFlex.h
@@ -836,9 +838,8 @@ NV_FLEX_API int NvFlexGetDistanceFields(NvFlexLibrary* lib, NvFlexDistanceFieldI
  * @param[in] field The volume data stored such that the voxel at the x,y,z coordinate is addressed as field[z*dimx*dimy + y*dimx + x]
  */
 NV_FLEX_API void NvFlexUpdateDistanceField(NvFlexLibrary* lib, NvFlexDistanceFieldId sdf, int dimx, int dimy, int dimz, NvFlexBuffer* field);
-#if NVFLEX_USE_REVERSED_LIB
-NV_FLEX_API void NvFlexUpdateDistanceField2(NvFlexLibrary* lib, NvFlexDistanceFieldId sdf, NvFlexTexture3D *field);
-#endif
+
+NVFLEX_REV_API void NvFlexUpdateDistanceField2(NvFlexLibrary* lib, NvFlexDistanceFieldId sdf, NvFlexTexture3D *field);
 
 /**
  * Create a convex mesh collision shape, see NvFlexConvexMeshId for details.
@@ -1341,11 +1342,9 @@ NV_FLEX_API void NvFlexWait(NvFlexLibrary* lib);
 
 //! \cond HIDDEN_SYMBOLS
 
-#if NVFLEX_USE_REVERSED_LIB
-NV_FLEX_API void NvFlexExecuteContext(NvFlexLibrary *lib);
-NV_FLEX_API void NvFlexWaitContext(NvFlexLibrary *lib);
-NV_FLEX_API void NvFlexResetContext(NvFlexLibrary* lib, bool waitForPrevious);
-#endif
+NVFLEX_REV_API void NvFlexExecuteContext(NvFlexLibrary *lib);
+NVFLEX_REV_API void NvFlexWaitContext(NvFlexLibrary *lib);
+NVFLEX_REV_API void NvFlexResetContext(NvFlexLibrary* lib, bool waitForPrevious);
 
 /**
  * Debug methods (unsupported)

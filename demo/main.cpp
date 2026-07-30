@@ -27,6 +27,7 @@
 #ifdef NVFLEX__USE_MICROSOFT_VLD
 #include <vld.h>
 #endif
+#include "cargs.h"
 #include "../core/types.h"
 #include "../core/maths.h"
 #include "../core/platform.h"
@@ -41,25 +42,29 @@
 
 #include "../external/SDL2-2.0.4/include/SDL.h"
 
-#include "../include/NvFlex.h"
 #include "../include/NvFlexExt.h"
 #include "../include/NvFlexDevice.h"
 
 #include <iostream>
 #include <map>
+#include <filesystem>
 
 #include "shaders.h"
 #include "imgui.h"
 
 #include "shadersDemoContext.h"
 
-#if FLEX_DX
 #include "d3d\appGraphCtx.h"
-#endif
 
 #if ENABLE_AFTERMATH_SUPPORT
 #include <external/GFSDK_Aftermath_v1.21/include/GFSDK_Aftermath.h>
 #endif
+
+#define NVFLEX_REV_EXPR(expr)                                                            \
+    (NvFlexRuntime::Get().GetBackend() == NvFlexRuntime::eBackendReversed ? (void)(expr) \
+                                                                          : (void)0)
+
+bool g_useFlexRev = false;
 
 SDL_Window* g_window;			// window handle
 unsigned int g_windowId;		// window id
@@ -571,13 +576,15 @@ struct PlaybackContext {
     };
     
     Mode writeMode;
+    uint32_t frameStart, frameEnd;
     uint32_t frameIndex;
     FILE* archiveStream;
     std::vector<Vec4> positionsBak;
 
     PlaybackContext()
         : writeMode{},
-          frameIndex{},
+          frameStart{},
+          frameEnd{},
           archiveStream{},
           positionsBak{} {}
 
@@ -585,11 +592,16 @@ struct PlaybackContext {
         writeMode = mode;
     }
 
+    void setFrameRange(uint32_t start, uint32_t end) {
+        frameStart = start;
+        frameEnd = end;
+    }
+
     void init() {
         if(this->writeMode == None)
             return;
 
-        frameIndex = 0;
+        frameIndex = -1; // physical frame initial index
         if (archiveStream) {
             fclose(archiveStream);
             archiveStream = nullptr;
@@ -601,6 +613,14 @@ struct PlaybackContext {
                      g_scenes[g_scene]->GetName());
             archiveStream = fopen(nameBuff, writeMode == Write ? "wb" : "rb");
             assert(archiveStream);
+
+            if(writeMode == Read) {
+                fread(&frameStart, sizeof(uint32_t), 1, archiveStream);
+                fread(&frameEnd, sizeof(uint32_t), 1, archiveStream);
+            } else {
+                fwrite(&frameStart, sizeof(uint32_t), 1, archiveStream);
+                fwrite(&frameEnd, sizeof(uint32_t), 1, archiveStream);
+            }
         }
     }
 
@@ -608,9 +628,11 @@ struct PlaybackContext {
         if(writeMode == None)
             return;
 
-        ++frameIndex;
+        uint32_t frameIndex = this->frameIndex++;
 
-        if(!isInSelectedFrameRange()) {
+        if (frameIndex == -1 || frameIndex < frameStart)
+            return;
+        else if(frameIndex >= frameEnd) {
             terminate();
             return;
         }
@@ -640,6 +662,11 @@ struct PlaybackContext {
                         constexpr float eps = 1e-3f;
                         if(!(std::abs(pos0.x - pos1.x) < eps && std::abs(pos0.y - pos1.y) < eps && std::abs(pos0.z - pos1.z) < eps
                         && std::abs(pos0.w - pos1.w) < eps)) {
+                            printf(
+                                "[Playback][Frame %u] particle %u current=(%.9g, %.9g, %.9g, %.9g) "
+                                "expect=(%.9g, %.9g, %.9g, %.9g)\n",
+                                frameIndex, i, pos0.x, pos0.y, pos0.z, pos0.w,
+                                pos1.x, pos1.y, pos1.z, pos1.w);
                             coincident = false;
                             break;
                         }
@@ -653,10 +680,6 @@ struct PlaybackContext {
     }
 
 private:
-    bool isInSelectedFrameRange() const {
-        return frameIndex < 200;
-    }
-
     void terminate() {
         if (writeMode == None)
             return;
@@ -664,6 +687,8 @@ private:
         if (archiveStream) {
             fclose(archiveStream);
             archiveStream = nullptr;
+            printf("[Playback] completed frame range [%u,%u)\n", frameStart, frameEnd);
+            fflush(stdout);
         }
     }
 
@@ -883,9 +908,7 @@ void Init(int scene, bool centerCamera = true)
 
 	// create scene
 	StartGpuWork();
-#if NVFLEX_USE_REVERSED_LIB
-        NvFlexResetContext(g_flexLib, true);
-#endif
+    NVFLEX_REV_EXPR(NvFlexResetContext(g_flexLib, true));
 	g_scenes[g_scene]->Initialize();
 	EndGpuWork();
 
@@ -919,9 +942,7 @@ void Init(int scene, bool centerCamera = true)
 	Vec3 shapeLower, shapeUpper;
 	GetShapeBounds(shapeLower, shapeUpper);
 
-#if NVFLEX_USE_REVERSED_LIB
-        NvFlexExecuteContext(g_flexLib);
-#endif
+    NVFLEX_REV_EXPR(NvFlexExecuteContext(g_flexLib));
 
         // update bounds
 	g_sceneLower = Min(Min(g_sceneLower, particleLower), shapeLower);
@@ -1051,9 +1072,7 @@ void Init(int scene, bool centerCamera = true)
 	//-----------------------------
 	// Send data to Flex
 
-#if NVFLEX_USE_REVERSED_LIB
-        NvFlexResetContext(g_flexLib, true);
-#endif
+    NVFLEX_REV_EXPR(NvFlexResetContext(g_flexLib, true));
 
 	NvFlexCopyDesc copyDesc;
 	copyDesc.dstOffset = 0;
@@ -1142,9 +1161,7 @@ void Init(int scene, bool centerCamera = true)
 		printf("Finished warm up.\n");
 	}
 
-#if NVFLEX_USE_REVERSED_LIB
-    NvFlexExecuteContext(g_flexLib);
-#endif
+    NVFLEX_REV_EXPR(NvFlexExecuteContext(g_flexLib));
 }
 
 void Reset()
@@ -2170,9 +2187,7 @@ void UpdateFrame()
 
 	double waitBeginTime = GetSeconds();
 
-#if NVFLEX_USE_REVERSED_LIB
-        NvFlexWaitContext(g_flexLib);
-#endif
+    NVFLEX_REV_EXPR(NvFlexWaitContext(g_flexLib));
 
 	MapBuffers(g_buffers);
 
@@ -2267,9 +2282,7 @@ void UpdateFrame()
 
 	double updateBeginTime = GetSeconds();
 
-#if NVFLEX_USE_REVERSED_LIB
-        NvFlexResetContext(g_flexLib, false);
-#endif
+    NVFLEX_REV_EXPR(NvFlexResetContext(g_flexLib, false));
 
 	// send any particle updates to the solver
 	NvFlexSetParticles(g_solver, g_buffers->positions.buffer, NULL);
@@ -2348,9 +2361,7 @@ void UpdateFrame()
 		NvFlexGetDiffuseParticles(g_solver, NULL, NULL, g_buffers->diffuseCount.buffer);
 	}
 
-#if NVFLEX_USE_REVERSED_LIB
-        NvFlexExecuteContext(g_flexLib);
-#endif
+    NVFLEX_REV_EXPR(NvFlexExecuteContext(g_flexLib));
 
 	double updateEndTime = GetSeconds();
 
@@ -2827,13 +2838,6 @@ void SDLInit(const char* title)
 		printf("Unable to initialize SDL");
 
 	unsigned int flags = SDL_WINDOW_RESIZABLE;
-#if !FLEX_DX
-	if (g_graphics == 0)
-	{
-		SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-		flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL;
-	}
-#endif
 
 	g_window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
 		g_screenWidth, g_screenHeight, flags);
@@ -2918,120 +2922,181 @@ void SDLMainLoop()
 #endif
 }
 
+static void parseArgs(int argc, char* argv[]) {
+    static const cag_option options[] = {
+        {'R', NULL, "dev", "BOOL", "Run Flex reversed backend"},
+        {'D', NULL, "device", "IDX", "Device index"},
+        {'E', NULL, "extensions", "BOOL", "Enable Flex extensions"},
+        {'B', NULL, "benchmark", NULL, "Enable benchmark mode"},
+        {'W', NULL, "d3d12", NULL, "Use D3D12 compute backend"},
+        {'A', NULL, "benchmarkAllFrameTimes", NULL, "Output all benchmark frame times"},
+        {'T', NULL, "tc", NULL, "Enable TeamCity mode"},
+        {'M', NULL, "msaa", "N", "Sample count for MSAA"},
+        {'F', NULL, "fullscreen", "WxH", "Run fullscreen at the given resolution"},
+        {'w', NULL, "windowed", "WxH", "Run windowed at the given resolution"},
+        {'V', NULL, "vsync", "BOOL", "Enable vsync"},
+        {'P', NULL, "multiplier", "N", "Extra particle multiplier"},
+        {'t', NULL, "disabletweak", NULL, "Disable tweak panel"},
+        {'I', NULL, "disableinterop", NULL, "Disable graphics/Flex interop"},
+        {'C', NULL, "asynccompute", "BOOL", "Enable async compute"},
+        {'G', NULL, "graphics", "N", "Graphics API: 0=ogl,1=dx11,2=dx12"},
+        {'S', NULL, "scene", "N", "Initial scene index"},
+        {'Y', NULL, "playback-mode", "MODE", "Playback mode: none, read, write"},
+        {'Z', NULL, "playback-range", "start,end", "Playback record physical frame range" },
+        {'h', "h", "help", NULL, "Usage"}};
+
+    cag_option_context context;
+    cag_option_init(&context, options, CAG_ARRAY_SIZE(options), argc, argv);
+
+    while (cag_option_fetch(&context)) {
+        if (cag_option_get_error_index(&context) >= 0) {
+#ifndef CAG_NO_FILE
+            cag_option_print_error(&context, stderr);
+#endif
+            exit(-1);
+        }
+
+        const char* value = cag_option_get_value(&context);
+        switch (cag_option_get_identifier(&context)) {
+            case 'h':
+                cag_option_printer(options, CAG_ARRAY_SIZE(options), (cag_printer)fprintf, stdout);
+                exit(0);
+            case 'R':
+            if(value)
+                g_useFlexRev = atoi(value) != 0;
+                break;
+
+            case 'D':
+                if (value)
+                    g_device = atoi(value);
+                break;
+
+            case 'E':
+                if (value)
+                    g_extensions = atoi(value) != 0;
+                break;
+
+            case 'B':
+                g_benchmark = true;
+                g_profile = true;
+                g_outputAllFrameTimes = false;
+                g_vsync = false;
+                g_fullscreen = true;
+                break;
+
+            case 'W':
+                g_d3d12 = true;
+                g_interop = false;
+                break;
+
+            case 'A':
+                g_benchmark = true;
+                g_outputAllFrameTimes = true;
+                break;
+
+            case 'T':
+                g_teamCity = true;
+                break;
+
+            case 'M':
+                if (value)
+                    g_msaaSamples = atoi(value);
+                break;
+
+            case 'F': {
+                int w = 1280, h = 720;
+                if (!value) {
+                    g_screenWidth = w;
+                    g_screenHeight = h;
+                    g_fullscreen = true;
+                } else if (sscanf(value, "%dx%d", &w, &h) == 2) {
+                    g_screenWidth = w;
+                    g_screenHeight = h;
+                    g_fullscreen = true;
+                }
+                break;
+            }
+
+            case 'w': {
+                int w = 1280, h = 720;
+                if (!value) {
+                    g_screenWidth = w;
+                    g_screenHeight = h;
+                    g_fullscreen = false;
+                } else if (sscanf(value, "%dx%d", &w, &h) == 2) {
+                    g_screenWidth = w;
+                    g_screenHeight = h;
+                    g_fullscreen = false;
+                }
+                break;
+            }
+
+            case 'V':
+                if (value)
+                    g_vsync = atoi(value) != 0;
+                break;
+
+            case 'P':
+                if (value)
+                    g_numExtraMultiplier = atoi(value);
+                break;
+
+            case 't':
+                g_tweakPanel = false;
+                break;
+
+            case 'I':
+                g_interop = false;
+                break;
+
+            case 'C':
+                if (value)
+                    g_useAsyncCompute = atoi(value) != 0;
+                break;
+
+            case 'G':
+                if (value) {
+                    int d = atoi(value);
+                    if (d >= 0 && d <= 2)
+                        g_graphics = d;
+                }
+                break;
+
+            case 'S':
+                if (value)
+                    g_scene = atoi(value);
+                break;
+
+            case 'Y':
+                if (_stricmp(value, "none") == 0)
+                    g_playbackCtx.setMode(PlaybackContext::None);
+                else if (_stricmp(value, "read") == 0)
+                    g_playbackCtx.setMode(PlaybackContext::Read);
+                else if (_stricmp(value, "write") == 0)
+                    g_playbackCtx.setMode(PlaybackContext::Write);
+                else {
+                    fprintf(stderr,
+                            "Invalid option for --playback-mode, use "
+                            "--playback-mode=<none|read|write>\n");
+                    exit(-1);
+                }
+                break;
+            case 'Z': {
+                uint32_t start, end;
+                if(sscanf(value, "%u,%u", &start, &end) == 2) {
+                    g_playbackCtx.setFrameRange(start, end);
+                } else {
+                    fprintf(stderr, "--playback-range must use a integer interval\n");
+                    exit(-1);
+                }
+            } break;
+        }
+    }
+}
+
 int main(int argc, char* argv[])
 {
-	// process command line args
-	for (int i = 1; i < argc; ++i)
-	{
-		int d;
-		if (sscanf(argv[i], "-device=%d", &d))
-			g_device = d;
-
-		if (sscanf(argv[i], "-extensions=%d", &d))
-			g_extensions = d != 0;
-
-		if (strcmp(argv[i], "-benchmark") == 0)
-		{
-			g_benchmark = true;
-			g_profile = true;
-			g_outputAllFrameTimes = false;
-			g_vsync = false;
-			g_fullscreen = true;
-		}
-
-		if (strcmp(argv[i], "-d3d12") == 0)
-		{
-			g_d3d12 = true;
-			// Currently interop doesn't work on d3d12
-			g_interop = false;
-		}
-
-		if (strcmp(argv[i], "-benchmarkAllFrameTimes") == 0)
-		{
-			g_benchmark = true;
-			g_outputAllFrameTimes = true;
-		}
-
-		if (strcmp(argv[i], "-tc") == 0)
-		{
-			g_teamCity = true;
-		}
-
-		if (sscanf(argv[i], "-msaa=%d", &d))
-			g_msaaSamples = d;
-
-		int w = 1280;
-		int h = 720;
-		if (sscanf(argv[i], "-fullscreen=%dx%d", &w, &h) == 2)
-		{
-			g_screenWidth = w;
-			g_screenHeight = h;
-			g_fullscreen = true;
-		}
-		else if (strcmp(argv[i], "-fullscreen") == 0)
-		{
-			g_screenWidth = w;
-			g_screenHeight = h;
-			g_fullscreen = true;
-		}
-
-		if (sscanf(argv[i], "-windowed=%dx%d", &w, &h) == 2)
-		{
-			g_screenWidth = w;
-			g_screenHeight = h;
-			g_fullscreen = false;
-		}
-		else if (strstr(argv[i], "-windowed"))
-		{
-			g_screenWidth = w;
-			g_screenHeight = h;
-			g_fullscreen = false;
-		}
-
-		if (sscanf(argv[i], "-vsync=%d", &d))
-			g_vsync = d != 0;
-
-		if (sscanf(argv[i], "-multiplier=%d", &d) == 1)
-		{
-			g_numExtraMultiplier = d;
-		}
-
-		if (strcmp(argv[i], "-disabletweak") == 0)
-		{
-			g_tweakPanel = false;
-		}
-
-		if (strcmp(argv[i], "-disableinterop") == 0)
-		{
-			g_interop = false;
-		}
-
-		if (sscanf(argv[i], "-asynccompute=%d", &d) == 1)
-		{
-			g_useAsyncCompute = (d != 0);
-		}
-
-		if (sscanf(argv[i], "-graphics=%d", &d) == 1)
-		{
-			if (d >= 0 && d <= 2)
-				g_graphics = d;
-		}
-
-        char playbackMode[8] = {};
-
-        if(sscanf(argv[i], "-playback-mode=%7s", playbackMode) == 1) {
-            if(_stricmp(playbackMode, "none") == 0) {
-                g_playbackCtx.setMode(PlaybackContext::None);
-            } else if(_stricmp(playbackMode, "read") == 0) {
-                g_playbackCtx.setMode(PlaybackContext::Read);
-            } else if(_stricmp(playbackMode, "write") == 0) {
-                g_playbackCtx.setMode(PlaybackContext::Write);
-            } else {
-                fprintf(stderr, "Invalid option for --playback-mode, use --playback=<none|read|write>\n");
-                return -1;
-            }
-        }
-	}
+    parseArgs(argc, argv);
 
 	// opening scene
 	g_scenes.push_back(new PotPourri("Pot Pourri"));
@@ -3260,12 +3325,17 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Goo", true));
 	g_scenes.push_back(new BunnyBath("Bunny Bath Dam", true));
 
+	if (g_scene < 0 || g_scene >= int(g_scenes.size()))
+	{
+		fprintf(stderr, "--scene must be in the range 0,%d\n", int(g_scenes.size()) - 1);
+		exit(-1);
+	}
+
 	// init graphics
 	RenderInitOptions options;
 
 #ifndef ANDROID
 	DemoContext* demoContext = nullptr;
-#if FLEX_DX
 	// Flex DX demo will always create the renderer using the same DX api as the flex lib
 	if (g_d3d12)
 	{
@@ -3277,32 +3347,15 @@ int main(int argc, char* argv[])
 	{
 		g_graphics = 1;
 	}
-#else
-	switch (g_graphics)
-	{
-	case 0: break;
-	case 1: break;
-	case 2:
-		// workaround for a driver issue with D3D12 with msaa, force it to off
-		// options.numMsaaSamples = 1;
-		// Currently interop doesn't work on d3d12
-		g_interop = false;
-		break;
-	default: assert(0);
-	}
-#endif
 	// Create the demo context
 	CreateDemoContext(g_graphics);
 
 	std::string str;
-#if FLEX_DX
 	if (g_d3d12)
 		str = "Flex Demo (Compute: DX12) ";
 	else
 		str = "Flex Demo (Compute: DX11) ";
-#else
-	str = "Flex Demo (Compute: CUDA) ";
-#endif
+
 	switch (g_graphics)
 	{
 	case 0:
@@ -3334,24 +3387,6 @@ int main(int argc, char* argv[])
 
 #endif // ifndef ANDROID
 
-#if _WIN32 && !FLEX_DX
-	// use the PhysX GPU selected from the NVIDIA control panel	
-	if (g_device == -1)
-		g_device = NvFlexDeviceGetSuggestedOrdinal();
-
-	// Create an optimized CUDA context for Flex and set it on the 
-	// calling thread. This is an optional call, it is fine to use 
-	// a regular CUDA context, although creating one through this API
-	// is recommended for best performance.
-	bool success = NvFlexDeviceCreateCudaContext(g_device);
-
-	if (!success)
-	{
-		printf("Error creating CUDA context.\n");
-		exit(-1);
-	}
-#endif
-
 	NvFlexInitDesc desc;
 	desc.deviceIndex = g_device;
 	desc.enableExtensions = g_extensions;
@@ -3360,7 +3395,6 @@ int main(int argc, char* argv[])
 	desc.computeContext = 0;
 	desc.computeType = eNvFlexCUDA;
 
-#if FLEX_DX
 	if (g_d3d12)
 		desc.computeType = eNvFlexD3D12;
 	else
@@ -3396,15 +3430,20 @@ int main(int argc, char* argv[])
 	//
 	// Search for g_useAsyncCompute for details
 	desc.runOnRenderContext = false;
-#else
-	// Shared resources are unimplemented on D3D12,
-	// so disable it for now.
-	if (g_d3d12)
-		g_interop = false;
-#endif
 
 	// Init Flex library, note that no CUDA methods should be called before this 
 	// point to ensure we get the device context we want
+	std::string flexError;
+	const std::filesystem::path flexRuntimePath = std::filesystem::current_path();
+	if (!NvFlexRuntime::Get().Load(
+			flexRuntimePath.wstring(),
+			g_useFlexRev ? NvFlexRuntime::eBackendReversed : NvFlexRuntime::eBackendPublic,
+			flexError))
+	{
+		std::cerr << flexError << std::endl;
+		exit(-1);
+	}
+
 	g_flexLib = NvFlexInit(NV_FLEX_VERSION, ErrorCallback, &desc);
 
 	if (g_Error || g_flexLib == NULL)

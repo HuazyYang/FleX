@@ -32,7 +32,7 @@
 #include "../core/maths.h"
 #include "../core/mesh.h"
 
-#include "../include/NvFlex.h"
+#include <nvflex_runtime.h>
 
 void GetRenderDevice(void** device, void** context);
 

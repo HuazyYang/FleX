@@ -28,8 +28,13 @@
 
 #define LOADER_ESC_MERGE(a, b) (a, b)
 
+#define LOADER_ESC_PARAM_SELECT_IMPL(numParams) LOADER_ESC_PARAM##numParams
+#define LOADER_ESC_PARAM_SELECT(numParams) LOADER_ESC_PARAM_SELECT_IMPL(numParams)
+#define LOADER_ESC_APPLY(macro, args) macro args
+
 #define LOADER_ESC(mode, numParams, params) \
-	LOADER_ESC_PARAM##numParams LOADER_ESC_MERGE(mode, LOADER_ESC_N params)
+	LOADER_ESC_APPLY(LOADER_ESC_PARAM_SELECT(numParams), \
+		LOADER_ESC_MERGE(mode, LOADER_ESC_N params))
 
 #define LOADER_DECLARE_FUNCTION_PTR(inst, inst_func, retType, method, numParams, params) \
 	typedef retType (*method##_ptr_t)( LOADER_ESC (LOADER_PARAM_DECLARE, numParams, params) );

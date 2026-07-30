@@ -12,12 +12,12 @@
 #define FLUID_SMOOTH_RENDER_PIPELINE_D3D12_H
 
 #include <DirectXMath.h>
-#include "RenderStateD3D12.h"
-#include "MeshRenderer.h"
+#include "renderStateD3D12.h"
+#include "meshRenderer.h"
 
 #include <NvCoDx12RenderTarget.h>
 
-#include "FluidEllipsoidRenderPipelineD3D12.h"
+#include "fluidEllipsoidRenderPipelineD3D12.h"
 
 namespace FlexSample {
 

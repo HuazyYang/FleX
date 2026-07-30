@@ -1071,6 +1071,7 @@ void Solver::UpdateSubstep(const IterationState &state) {
     RecorderParticles(state);
     CollideParticles(state);
     ExecuteCallback(eNvFlexStageSubstepBegin, state.dta);
+    mLib->ClearBufferInt(mStaticContactCounts, sizeof(int) * mMaxParticles, 0);
     CollideTriangles(state);
     CollideShapes(state);
     ContinuousShockPropagation(state);
@@ -1091,7 +1092,7 @@ void Solver::UpdateSubstep(const IterationState &state) {
     ExecuteCallback(eNvFlexStageSubstepEnd, state.dta);
 
     if (state.substepIdx == state.numSubsteps - 1)
-        ExecuteCallback(eNvFlexStageUpdateEnd, state.dta);
+        ExecuteCallback(eNvFlexStageUpdateEnd, state.dt);
 
     CalculateVorticity(state);
     SolveVelocities(state);
@@ -1112,7 +1113,7 @@ void Solver::UpdateSubstep(const IterationState &state) {
             ClampDiffuse(state);
             CompactDiffuse(state);
             swap(mDiffusePositions, mDiffusePositionsNew);
-            swap(mDiffuseVelocities, mDiffusePositionsNew);
+            swap(mDiffuseVelocities, mDiffuseVelocitiesNew);
             swap(mNumDiffuseParticles, mNumDiffuseParticlesNew);
         }
 
@@ -1162,7 +1163,7 @@ void Solver::ComputeBounds(const IterationState &state) {
     params.readWrite[0] = NvFlexBufferGetResourceRW(mGroupBoundsLower);
     params.readWrite[1] = NvFlexBufferGetResourceRW(mGroupBoundsUpper);
     params.readWrite[2] = NvFlexBufferGetResourceRW(mParticleBounds);
-    params.readOnly[2] = NvFlexBufferGetResource(mBoundsUpper);
+    params.readOnly[2] = NvFlexBufferGetResource(mBoundsLower);
     params.readOnly[3] = NvFlexBufferGetResource(mBoundsUpper);
     params.gridDim = make_dim(kNumGroupBoundsBlocks, 1, 1);
     NvFlexContextDispatch(mLib->mContext, &params);
@@ -1355,8 +1356,8 @@ void Solver::CollideShapes(const IterationState &state) {
         params.readOnly[14] = NvFlexBufferGetResource(mLib->mSDFData->mSDFs);
         for (int i = 0; i < 16; ++i) {
             if(mLib->mSDFData->mTextures[i]) {
-                params.readWrite[i + 15] =
-                    NvFlexTexture3DGetResourceRW(mLib->mSDFData->mTextures[i]);
+                params.readOnly[i + 15] =
+                    NvFlexTexture3DGetResource(mLib->mSDFData->mTextures[i]);
             }
         }
     }
@@ -1430,7 +1431,7 @@ void Solver::SolveDensity(const IterationState &state) {
 void Solver::SolveSprings(const IterationState &) {
     if(mNumSprings) {
         NVFLEX_PROFILE_SECTION("SolveSprings", mTimerPool);
-        const NvFlexUint kNumParticleBlocks = divCeil<512>(8 * mNumParticles);
+        const NvFlexUint kNumParticleBlocks = divCeil<512>(8 * mMaxParticles);
         NvFlexDispatchParams params = {};
         params.shader = mLib->mShaderSolveSprings;
         params.readWrite[0] = NvFlexBufferGetResourceRW(mDeltas);
@@ -1514,7 +1515,7 @@ void Solver::SolveShapes(const IterationState &) {
                     params.shader = mLib->mShaderSolveShapesPlasticDeformation32;
             } else
                 params.shader = mLib->mShaderSolveShapesPlasticDeformation;
-        } else if(mLib->mIsFP32ATOMICSupported && mLib->mIsFP32ATOMICSupported) {
+        } else if(mLib->mIsSHFLSupported && mLib->mIsFP32ATOMICSupported) {
             avgWorkload = mNumRigidIndices / mNumRigids;
             if (avgWorkload > 32) {
                 if (avgWorkload < 128)
@@ -1800,40 +1801,23 @@ void Solver::LazyClearGrid(const IterationState &state) {
 }
 
 void Solver::ExecuteCallback(NvFlexSolverCallbackStage stage, float dt) {
-#if 0
     if (stage >= 0 && stage < eNvFlexStageCount && mCallbacks[stage].function) {
-        auto context = mLib->mContext;
-        NvFlexBufferDownload(mLib->mContext, mSortedNewPositions);
-        NvFlexBufferDownload(mLib->mContext, mSortedNewVelocities);
-        NvFlexBufferDownload(mLib->mContext, mSortedPhases);
-
         auto sortedCellHash = mRadixSort->getBuffer();
-        NvFlexBufferDownload(mLib->mContext, sortedCellHash.key);
-        NvFlexBufferDownload(mLib->mContext, sortedCellHash.val);
-
         auto cb = &mCallbacks[stage];
         NvFlexSolverCallbackParams params = {};
-        params.particles =
-            (float *)NvFlexBufferMapDownload(mLib->mContext, mSortedNewPositions);
-        params.velocities =
-            (float *)NvFlexBufferMapDownload(mLib->mContext, mSortedNewVelocities);
-        params.phases = (int *)NvFlexBufferMapDownload(mLib->mContext, mSortedPhases);
+        params.particles = reinterpret_cast<float *>(
+            static_cast<NvFlexBuffer *>(mSortedNewPositions));
+        params.velocities = reinterpret_cast<float *>(
+            static_cast<NvFlexBuffer *>(mSortedNewVelocities));
+        params.phases =
+            reinterpret_cast<int *>(static_cast<NvFlexBuffer *>(mSortedPhases));
         params.numActive = mNumParticles;
-        params.sortedToOriginalMap =
-            (const int *)NvFlexBufferMapDownload(mLib->mContext, sortedCellHash.key);
-        params.originalToSortedMap =
-            (const int *)NvFlexBufferMapDownload(mLib->mContext, sortedCellHash.val);
+        params.sortedToOriginalMap = reinterpret_cast<const int *>(sortedCellHash.key);
+        params.originalToSortedMap = reinterpret_cast<const int *>(sortedCellHash.val);
         params.userData = cb->userData;
         params.dt = dt;
         cb->function(params);
-
-        NvFlexBufferUnmapDownload(context, mSortedNewPositions);
-        NvFlexBufferUnmapDownload(context, mSortedNewVelocities);
-        NvFlexBufferUnmapDownload(context, mSortedPhases);
-        NvFlexBufferUnmapDownload(context, sortedCellHash.key);
-        NvFlexBufferUnmapDownload(context, sortedCellHash.val);
     }
-#endif
 }
 
 void Solver::CopyBufferImpl(NvFlexBuffer *dstBuffer, NvFlexBuffer *srcBuffer,

@@ -15,7 +15,7 @@
 
 // include the Direct3D Library file
 #pragma comment (lib, "d3d12.lib")
-#pragma comment (lib, "DXGI.lib")
+#pragma comment (lib, "dxgi.lib")
 
 #include "appD3D12Ctx.h"
 

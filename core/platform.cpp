@@ -37,8 +37,6 @@
 #include <stdio.h>
 #include <string.h>
 
-using namespace std;
-
 #if defined(WIN32) || defined(WIN64)
 
 #include <windows.h>
@@ -82,7 +80,7 @@ void Sleep(double seconds)
 
 
 //// helper function to get exe path
-//string GetExePath()
+//std::string GetExePath()
 //{
 //	const uint32_t kMaxPathLength = 2048;
 //
@@ -96,10 +94,10 @@ void Sleep(double seconds)
 //		i--;
 //
 //	// insert null terminater to cut off exe name
-//	return string(&exepath[0], &exepath[i+1]);
+//	return std::string(&exepath[0], &exepath[i+1]);
 //}
 //
-//string FileOpenDialog(char *filter)
+//std::string FileOpenDialog(char *filter)
 //{
 //	HWND owner=NULL;
 //
@@ -114,7 +112,7 @@ void Sleep(double seconds)
 //	ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
 //	ofn.lpstrDefExt = "";
 //
-//	string fileNameStr;
+//	std::string fileNameStr;
 //
 //	if ( GetOpenFileName(&ofn) )
 //		fileNameStr = fileName;
@@ -128,7 +126,7 @@ void Sleep(double seconds)
 //	return b == TRUE;
 //}
 //
-//bool FileScan(const char* pattern, vector<string>& files)
+//bool FileScan(const char* pattern, vector<std::string>& files)
 //{
 //	HANDLE          h;
 //	WIN32_FIND_DATA info;
@@ -219,16 +217,16 @@ uint8_t* LoadFileToBuffer(const char* filename, uint32_t* sizeRead)
 	}
 }
 
-string LoadFileToString(const char* filename)
+std::string LoadFileToString(const char* filename)
 {
 	//std::ifstream file(filename);
-	//return string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+	//return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 	uint32_t size;
 	uint8_t* buf = LoadFileToBuffer(filename, &size);
 	
 	if (buf)
 	{
-		string s(buf, buf+size);
+		std::string s(buf, buf+size);
 		delete[] buf;
 		
 		return s;
@@ -257,7 +255,7 @@ bool SaveStringToFile(const char* filename, const char* s)
 }
 
 
-string StripFilename(const char* path)
+std::string StripFilename(const char* path)
 {
 	// simply find the last 
 	const char* iter=path;
@@ -272,19 +270,19 @@ string StripFilename(const char* path)
 	
 	if (last)
 	{
-		return string(path, last+1);
+		return std::string(path, last+1);
 	}
 	else
-		return string();
+		return std::string();
 	
 }
 
-string GetExtension(const char* path)
+std::string GetExtension(const char* path)
 {
 	const char* s = strrchr(path, '.');
 	if (s)
 	{
-		return string(s+1);
+		return std::string(s+1);
 	}
 	else
 	{
@@ -292,22 +290,22 @@ string GetExtension(const char* path)
 	}
 }
 
-string StripExtension(const char* path)
+std::string StripExtension(const char* path)
 {
 	const char* s = strrchr(path, '.');
 	if (s)
 	{
-		return string(path, s);
+		return std::string(path, s);
 	}
 	else
 	{
-		return string(path);
+		return std::string(path);
 	}
 }
 
-string NormalizePath(const char* path)
+std::string NormalizePath(const char* path)
 {
-	string p(path);
+	std::string p(path);
 	replace(p.begin(), p.end(), '\\', '/');
 	transform(p.begin(), p.end(), p.begin(), ::tolower);
 	
@@ -315,7 +313,7 @@ string NormalizePath(const char* path)
 }
 
 // strips the path from a file name
-string StripPath(const char* path)
+std::string StripPath(const char* path)
 {
 	// simply find the last 
 	const char* iter=path;
@@ -330,7 +328,7 @@ string StripPath(const char* path)
 	
 	if (!last)
 	{
-		return string(path);
+		return std::string(path);
 	}
 	
 	// eat the last slash
@@ -338,11 +336,11 @@ string StripPath(const char* path)
 	
 	if (*last)
 	{
-		return string(last);
+		return std::string(last);
 	}
 	else
 	{
-		return string();	
+		return std::string();	
 	}
 }
 

@@ -13,7 +13,6 @@
 #include <DirectXMath.h>
 
 #include "shadowMapD3D11.h"
-#include "../include/NvFlex.h"
 #include "../d3d/renderParamsD3D.h"
 #include "shaders.h"
 

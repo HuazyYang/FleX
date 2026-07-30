@@ -36,7 +36,8 @@ inline void SafeRelease(T*& ptr) {
     }
 }
 
-template <typename T, size_t N, std::enable_if_t<std::is_base_of_v<IUnknown, T>, int> = 0>
+template <typename T, uint32_t N,
+          std::enable_if_t<std::is_base_of_v<IUnknown, T>, int> = 0>
 inline void SafeRelease(VectorCached<T*, N>& a) {
     for (auto& v : a) {
         if (v) {
@@ -54,7 +55,7 @@ inline void SafeRelease(T*& ptr) {
     }
 }
 
-template <typename T, size_t N,
+template <typename T, uint32_t N,
           std::enable_if_t<std::is_base_of_v<NvFlexObject, T>, int> = 0>
 inline void SafeRelease(VectorCached<T*, N>& a) {
     for (auto& v : a) {

@@ -30,7 +30,7 @@ static NvFlexUint TightPack3D(float radius, float separation, NvFlexFloat3 *poin
                    offset = 0.f;
                float ypos = y * sqrt(0.75f) * separation;
                float zpos = z * sqrt(0.75f) * separation;
-               auto pos = make_float3(x * separation, ypos, zpos);
+               auto pos = make_float3(x * separation + offset, ypos, zpos);
                auto len = length(pos);
                if(len != 0.f && c < maxPoints && radius >= len)
                    points[c++] = pos;

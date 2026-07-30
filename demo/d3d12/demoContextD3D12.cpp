@@ -39,7 +39,7 @@
 
 // include the Direct3D Library file
 #pragma comment (lib, "d3d12.lib")
-#pragma comment (lib, "DXGI.lib")
+#pragma comment (lib, "dxgi.lib")
 
 using namespace DirectX;
 
@@ -59,6 +59,16 @@ DemoContext* CreateDemoContextD3D12()
 }
 
 namespace FlexSample {  
+
+Hlsl::float4 ToFloat4(const Colour& value)
+{
+	return Hlsl::float4(value.r, value.g, value.b, value.a);
+}
+
+Hlsl::float4 ToFloat4(const FlexVec4& value)
+{
+	return Hlsl::float4(value.x, value.y, value.z, value.w);
+}
 
 DemoContextD3D12::DemoContextD3D12()
 {
@@ -990,8 +1000,8 @@ void DemoContextD3D12::drawCloth(const FlexVec4* positions, const FlexVec4* norm
 	params.bias = 0.0f;
 	params.expand = expand;
 
-	params.color = (Hlsl::float4&)(g_colors[colorIndex + 1] * 1.5f);
-	params.secondaryColor = (Hlsl::float4&)(g_colors[colorIndex] * 1.5f);
+	params.color = ToFloat4(g_colors[colorIndex + 1] * 1.5f);
+	params.secondaryColor = ToFloat4(g_colors[colorIndex] * 1.5f);
 	params.objectTransform = (Hlsl::float4x4&)Matrix44::kIdentity;
 	params.shadowMap = (ShadowMapD3D*)m_currentShadowMap;
 
@@ -1033,8 +1043,8 @@ void DemoContextD3D12::drawRope(FlexVec4* positions, int* indices, int numIndice
 
 	MeshDrawParamsD3D& params = m_meshDrawParams;
 
-	params.color = (Hlsl::float4&)(g_colors[color % 8] * 1.5f);
-	params.secondaryColor = (Hlsl::float4&)(g_colors[color % 8] * 1.5f);
+	params.color = ToFloat4(g_colors[color % 8] * 1.5f);
+	params.secondaryColor = ToFloat4(g_colors[color % 8] * 1.5f);
 	params.shadowMap = (ShadowMapD3D*)m_currentShadowMap;
 
 	MeshData meshData;
@@ -1068,7 +1078,7 @@ void DemoContextD3D12::drawPlane(const FlexVec4& p, bool color)
 	params.shadowMap = (ShadowMapD3D*)m_currentShadowMap;
 
 	if (color)
-		params.color = (Hlsl::float4&)(p * 0.5f + FlexVec4(0.5f, 0.5f, 0.5f, 0.5f));
+		params.color = ToFloat4(p * 0.5f + FlexVec4(0.5f, 0.5f, 0.5f, 0.5f));
 
 	const float kSize = 200.0f;
 	const int kGrid = 3;
@@ -1119,7 +1129,7 @@ void DemoContextD3D12::drawPlanes(FlexVec4* planes, int n, float bias)
 {
 	MeshDrawParamsD3D& params = m_meshDrawParams;
 
-	params.color = (Hlsl::float4&)FlexVec4(0.9f, 0.9f, 0.9f, 1.0f);
+	params.color = Hlsl::float4(0.9f, 0.9f, 0.9f, 1.0f);
 
 	params.bias = 0.0f;
 	params.grid = 1;

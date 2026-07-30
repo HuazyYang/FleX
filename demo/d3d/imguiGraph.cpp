@@ -26,11 +26,9 @@ void* imguimalloc(size_t size, void* userptr);
 
 #define STBTT_malloc(x,y)    imguimalloc(x,y)
 #define STBTT_free(x,y)      imguifree(x,y)
-#if FLEX_DX
+
 #define STB_TRUETYPE_IMPLEMENTATION
-#else
-#define STBTT_ifloor
-#endif
+
 #include "stb_truetype.h"
 
 void imguifree(void* ptr, void* /*userptr*/)

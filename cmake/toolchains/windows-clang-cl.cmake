@@ -61,22 +61,20 @@ if(NOT NVFLEX_MSVC_TOOLSET OR NOT NVFLEX_SDK_INCLUDE OR
         NOT NVFLEX_FXC_EXECUTABLE)
     message(FATAL_ERROR
         "Missing FleX Windows cross-toolchain files in ${NVFLEX_WINEPREFIX}.\n"
-        "Run Tools/wine/bootstrap-toolchain.sh --check, or provision them "
+        "Run scripts/wine/bootstrap-toolchain.sh --check, or provision them "
         "with --install --accept-msvc-license.")
 endif()
 
-set(CMAKE_C_COMPILER "${NVFLEX_SOURCE_ROOT}/Tools/wine/clang-cl.sh")
-set(CMAKE_CXX_COMPILER "${NVFLEX_SOURCE_ROOT}/Tools/wine/clang-cl.sh")
-set(CMAKE_LINKER "${NVFLEX_SOURCE_ROOT}/Tools/wine/lld-link.sh")
-set(CMAKE_AR "${NVFLEX_SOURCE_ROOT}/Tools/wine/llvm-lib.sh")
-set(CMAKE_RC_COMPILER "${NVFLEX_SOURCE_ROOT}/Tools/wine/llvm-rc.sh")
-set(CMAKE_MT "${NVFLEX_SOURCE_ROOT}/Tools/wine/llvm-mt.sh")
+set(CMAKE_C_COMPILER "${NVFLEX_SOURCE_ROOT}/scripts/wine/clang-cl.sh")
+set(CMAKE_CXX_COMPILER "${NVFLEX_SOURCE_ROOT}/scripts/wine/clang-cl.sh")
+set(CMAKE_LINKER "${NVFLEX_SOURCE_ROOT}/scripts/wine/lld-link.sh")
+set(CMAKE_AR "${NVFLEX_SOURCE_ROOT}/scripts/wine/llvm-lib.sh")
+set(CMAKE_RC_COMPILER "${NVFLEX_SOURCE_ROOT}/scripts/wine/llvm-rc.sh")
+set(CMAKE_MT "${NVFLEX_SOURCE_ROOT}/scripts/wine/llvm-mt.sh")
 
 set(CMAKE_C_COMPILER_TARGET x86_64-pc-windows-msvc)
 set(CMAKE_CXX_COMPILER_TARGET x86_64-pc-windows-msvc)
 set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
-set(CMAKE_MAP_IMPORTED_CONFIG_DEBUG Release "")
-set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release "")
 
 set(CMAKE_C_FLAGS_DEBUG_INIT "/Od /Ob0 -gdwarf")
 set(CMAKE_CXX_FLAGS_DEBUG_INIT "/Od /Ob0 -gdwarf")
@@ -86,7 +84,7 @@ set(CMAKE_SHARED_LINKER_FLAGS_DEBUG_INIT "/debug:dwarf")
 set(NVFLEX_WINDOWS_CLANG_CROSS ON CACHE BOOL
     "Build x64 Windows FleX binaries with host clang-cl and lld-link")
 set(NVFLEX_SHADER_TOOL_EMULATOR
-    "${NVFLEX_SOURCE_ROOT}/Tools/wine/wine-shader-tool.sh"
+    "${NVFLEX_SOURCE_ROOT}/scripts/wine/wine-shader-tool.sh"
     CACHE FILEPATH "Wine emulator and path translator for ShaderTool.exe")
 set(FXC_COMPILER "${NVFLEX_FXC_EXECUTABLE}" CACHE FILEPATH
     "Windows SDK FXC executable run by ShaderTool.exe" FORCE)

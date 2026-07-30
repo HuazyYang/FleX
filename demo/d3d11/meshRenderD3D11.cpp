@@ -20,7 +20,7 @@
 #include <math.h>
 
 #include "meshRenderD3D11.h"
-#include "appD3d11Ctx.h"
+#include "appD3D11Ctx.h"
 
 
 #include "../d3d/shaders/meshVS.hlsl.h"

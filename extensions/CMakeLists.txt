@@ -27,10 +27,13 @@ set(NvFlexExt_SOURCES
     "flexExtMovingFrame.cpp"
     "flexExtRigid.cpp"
     "flexExtSoft.cpp"
+    "../include/nvflex_runtime.h"
+    "nvflex_runtime.cpp"
 )
 
 add_library(NvFlexExt SHARED ${NvFlexExt_SOURCES})
 set_target_properties(NvFlexExt PROPERTIES
+    CXX_STANDARD 17
     OUTPUT_NAME ${NvFlexExt_OUTNAME}
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
 )
@@ -42,12 +45,7 @@ target_compile_definitions(NvFlexExt PRIVATE
 target_include_directories(NvFlexExt PRIVATE
     "$<BUILD_INTERFACE:${NvFlexExt_SHADER_HEADER_OUTPUT_DIR}/..>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>"
 )
-if(NVFLEX_USE_REVERSED_LIB)
-    target_link_libraries(NvFlexExt PRIVATE NvFlexRev)
-    target_compile_definitions(NvFlexExt PRIVATE "NVFLEX_USE_REVERSED_LIB=1")
-else()
-    target_link_libraries(NvFlexExt PRIVATE NvFlexLib)
-endif()
-add_dependencies(NvFlexExt NvFlexExtShaders)
+add_dependencies(NvFlexExt NvFlexLib NvFlexRev NvFlexExtShaders)
 

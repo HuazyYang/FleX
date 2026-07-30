@@ -8,6 +8,9 @@
 struct NvFlexSolver;
 
 struct NvResourceTracker : NvFlex::Allocable {
+    NvResourceTracker() {}
+    ~NvResourceTracker() {}
+
     enum ResourceType { eSolver = 0, eTriangleMesh = 1, eSDF = 2, eConvexMesh = 3 };
     NvFlex::VectorCached<NvFlexSolver *> mSolver;
     NvFlex::VectorCached<NvFlexUint> mTriangleMesh;

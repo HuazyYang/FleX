@@ -12,7 +12,7 @@
 #define FLUID_ELLIPSOID_RENDER_PIPELINE_D3D12_H
 
 #include <DirectXMath.h>
-#include "RenderStateD3D12.h"
+#include "renderStateD3D12.h"
 #include "../d3d/renderParamsD3D.h"
 #include "meshRenderer.h"
 

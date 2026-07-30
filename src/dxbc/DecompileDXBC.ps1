@@ -1,7 +1,7 @@
 
 $WorkDirectory = Split-Path $MyInvocation.MyCommand.Path -Resolve -Parent
 
-$HLSLCompiler = Join-Path $WorkDirectory "../../Tools/HLSLDecompiler/cmd_Decompiler.exe" -Resolve
+$HLSLCompiler = Join-Path $WorkDirectory "../../scripts/HLSLDecompiler/cmd_Decompiler.exe" -Resolve
 
 $DXDCBinaryFileList = Get-Item ($WorkDirectory + "/*.txt")
 

@@ -11,7 +11,7 @@
 #include <NvResult.h>
 
 #define NOMINMAX
-#include <DXGIDebug.h>
+#include <dxgidebug.h>
 #include <wrl.h>
 
 using namespace Microsoft::WRL;

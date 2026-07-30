@@ -32,8 +32,7 @@
  * The main include file for the Flex extensions API, this is a collection of helper functions
  * for asset creation, scene management, and sample code that builds on the Flex core API.
  */
-
-#include "NvFlex.h"
+#include "nvflex_runtime.h"
 
 #include <cassert>
 #include <cstddef>

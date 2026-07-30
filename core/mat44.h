@@ -170,9 +170,16 @@ public:
 
 	float columns[4][4];
 
-	static XMatrix44<T> kIdentity;
+	static const XMatrix44<T> kIdentity;
 
 };
+
+template<>
+inline const XMatrix44<float> XMatrix44<float>::kIdentity(
+	1.0f, 0.0f, 0.0f, 0.0f,
+	0.0f, 1.0f, 0.0f, 0.0f,
+	0.0f, 0.0f, 1.0f, 0.0f,
+	0.0f, 0.0f, 0.0f, 1.0f);
 
 // right multiply a point assumes w of 1
 template <typename T>

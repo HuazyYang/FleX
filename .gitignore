@@ -4,9 +4,9 @@
 *.exp
 *.ilk
 .vscode/*
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/settings.json
+.vscode/tasks.json
+.vscode/launch.json
+.vscode/settings.json
 .cache
 build
 .run

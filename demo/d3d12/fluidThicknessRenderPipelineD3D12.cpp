@@ -15,7 +15,7 @@
 #include "../d3d/shaders/pointThicknessPS.hlsl.h"
 
 // this
-#include "FluidThicknessRenderPipelineD3D12.h"
+#include "fluidThicknessRenderPipelineD3D12.h"
 
 namespace FlexSample {
 

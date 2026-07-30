@@ -31,6 +31,9 @@ And either:
 * CUDA 9.2.148 toolkit
 * DirectX 11/12 SDK
 
+For the supported Linux-to-Win64 DX11/DX12 cross-build and Wine launch
+procedure, see [scripts/wine/README.md](scripts/wine/README.md).
+
 Demo 
 ====
 

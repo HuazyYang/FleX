@@ -46,6 +46,27 @@ void inline COMRelease(T& t, UINT arraySize)
 		t[i] = nullptr;
 	}
 }
+
+float3 ToFloat3(const Vec3& value)
+{
+	return float3(value.x, value.y, value.z);
+}
+
+float4 ToFloat4(const Vec4& value)
+{
+	return float4(value.x, value.y, value.z, value.w);
+}
+
+float4 ToFloat4(const Colour& value)
+{
+	return float4(value.r, value.g, value.b, value.a);
+}
+
+DirectX::XMMATRIX ToXMMATRIX(const Matrix44& value)
+{
+	return DirectX::XMLoadFloat4x4(
+		reinterpret_cast<const DirectX::XMFLOAT4X4*>(&value));
+}
 }
 
 extern Colour g_colors[];
@@ -709,8 +730,8 @@ void DemoContextD3D11::drawCloth(const Vec4* positions, const Vec4* normals, con
 	m_meshDrawParams.bias = 0.0f;
 	m_meshDrawParams.expand = expand;
 
-	m_meshDrawParams.color = (const float4&)(g_colors[colorIndex + 1] * 1.5f);
-	m_meshDrawParams.secondaryColor = (const float4&)(g_colors[colorIndex] * 1.5f);
+	m_meshDrawParams.color = ToFloat4(g_colors[colorIndex + 1] * 1.5f);
+	m_meshDrawParams.secondaryColor = ToFloat4(g_colors[colorIndex] * 1.5f);
 	m_meshDrawParams.objectTransform = (float4x4&)Matrix44::kIdentity;
 	m_meshDrawParams.shadowMap = (ShadowMapD3D*)m_shadowMap;
 
@@ -750,8 +771,8 @@ void DemoContextD3D11::drawRope(Vec4* positions, int* indices, int numIndices, f
 
 	setCullMode(false);
 
-	m_meshDrawParams.color = (const float4&)(g_colors[color % 8] * 1.5f);
-	m_meshDrawParams.secondaryColor = (const float4&)(g_colors[color % 8] * 1.5f);
+	m_meshDrawParams.color = ToFloat4(g_colors[color % 8] * 1.5f);
+	m_meshDrawParams.secondaryColor = ToFloat4(g_colors[color % 8] * 1.5f);
 	m_meshDrawParams.objectTransform = (const float4x4&)Matrix44::kIdentity;
 	m_meshDrawParams.shadowMap = (ShadowMapD3D*)m_shadowMap;
 
@@ -774,7 +795,7 @@ void DemoContextD3D11::drawPlane(const Vec4& p, bool color)
 	m_meshDrawParams.shadowMap = (ShadowMapD3D*)m_shadowMap;
 
 	if (color)
-		m_meshDrawParams.color = (const float4&)(p * 0.5f + Vec4(0.5f, 0.5f, 0.5f, 0.5f));
+		m_meshDrawParams.color = ToFloat4(p * 0.5f + Vec4(0.5f, 0.5f, 0.5f, 0.5f));
 
 	const float kSize = 200.0f;
 	const int kGrid = 3;
@@ -815,7 +836,7 @@ void DemoContextD3D11::drawPlane(const Vec4& p, bool color)
 
 void DemoContextD3D11::drawPlanes(Vec4* planes, int n, float bias)
 {
-	m_meshDrawParams.color = (float4&)Vec4(0.9f, 0.9f, 0.9f, 1.0f);
+	m_meshDrawParams.color = float4(0.9f, 0.9f, 0.9f, 1.0f);
 
 	m_meshDrawParams.bias = 0.0f;
 	m_meshDrawParams.grid = 1;
@@ -1020,8 +1041,8 @@ void DemoContextD3D11::renderEllipsoids(FluidRenderer* rendererIn, FluidRenderBu
 		deviceContext->OMSetBlendState(m_compositeBlendState, blendFactor, 0xffff);
 	}
 
-	params.invTexScale = (float4&)Vec2(1.0f / screenWidth, screenAspect / screenWidth);
-	params.clipPosToEye = (float4&)Vec2(tanf(fov*0.5f)*screenAspect, tanf(fov*0.5f));
+	params.invTexScale = float4(1.0f / screenWidth, screenAspect / screenWidth, 0.0f, 0.0f);
+	params.clipPosToEye = float4(tanf(fov*0.5f)*screenAspect, tanf(fov*0.5f), 0.0f, 0.0f);
 	params.color = (float4&)color;
 	params.ior = ior;
 	params.spotMin = m_spotMin;
@@ -1029,8 +1050,8 @@ void DemoContextD3D11::renderEllipsoids(FluidRenderer* rendererIn, FluidRenderBu
 	params.debug = debug;
 
 	params.lightPos = (const float3&)lightPos;
-	params.lightDir = (const float3&)-Normalize(lightTarget - lightPos);
-	params.lightTransform = (const XMMATRIX&)(ConvertToD3DProjection(lightTransform));
+	params.lightDir = ToFloat3(-Normalize(lightTarget - lightPos));
+	params.lightTransform = ToXMMATRIX(ConvertToD3DProjection(lightTransform));
 
 	// Resolve MS back buffer/copy
 	if (m_msaaSamples > 1)

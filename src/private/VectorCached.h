@@ -189,7 +189,8 @@ class VectorCached {
         m_size = 0;
     }
 
-    template<typename = std::enable_if_t<std::is_default_constructible_v<T>>>
+    template <typename U = T,
+              std::enable_if_t<std::is_default_constructible_v<U>, int> = 0>
     VectorCached(size_t count) {
         m_data = allocate(count);
         auto last = details::default_construct_range(m_data, m_data + count);
@@ -197,7 +198,8 @@ class VectorCached {
         m_size = last - m_data;
     }
 
-    template<typename = std::enable_if_t<std::is_copy_assignable_v<T>>>
+    template <typename U = T,
+              std::enable_if_t<std::is_copy_constructible_v<U>, int> = 0>
     VectorCached(size_t count, const T &val) {
         m_data = allocate(count);
         auto last = details::copy_construct_range_one_value(m_data, m_data + count, val);

@@ -12,6 +12,11 @@ set_target_properties(ShaderTool PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded"
     # LINK_LIBRARIES "vld"
     )
+if(NVFLEX_WINDOWS_CLANG_CROSS)
+    set_property(
+        TARGET ShaderTool
+        PROPERTY CROSSCOMPILING_EMULATOR "${NVFLEX_SHADER_TOOL_EMULATOR}")
+endif()
 endif()
 
 function(nvflow_add_shader_object_headers)
@@ -22,7 +27,7 @@ function(nvflow_add_shader_object_headers)
     cmake_parse_arguments("nvflow" "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     # Set ShaderTool program path
-    set(SHADERTOOL_PROG "$<TARGET_FILE:ShaderTool>")
+    set(SHADERTOOL_PROG ShaderTool)
 
     # Sanity check
     if(NOT nvflow_TARGET OR NOT nvflow_CONFIG_FILE)
@@ -61,21 +66,8 @@ function(nvflow_add_shader_object_headers)
 
     # # build stage
 
-    # Make output directory if not present
     set(objects_output_dir ${nvflow_OUTPUT_DIRECTORY})
-    add_custom_command(
-        OUTPUT ${objects_output_dir}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${objects_output_dir}
-        COMMAND_EXPAND_LISTS
-    )
-
-    # Make intermediate directory
     set(intermediate_dir "${CMAKE_CURRENT_BINARY_DIR}/__shadertools_${nvflow_TARGET}")
-    add_custom_command(
-        OUTPUT ${intermediate_dir}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${intermediate_dir}
-        COMMAND_EXPAND_LISTS
-    )
 
     file(STRINGS ${nvflow_CONFIG_FILE} shader_cfg_lines REGEX "^[ \t\r\n]*[^#]+$")
 
@@ -162,17 +154,38 @@ function(nvflow_add_shader_object_headers)
         # Make depfile intermediate directory
         cmake_path(APPEND intermediate_dir ${entry_file_dir_rel_config} OUTPUT_VARIABLE depfile_output_dir)
         set(depfile_output_path "${depfile_output_dir}/${output_file_name}.depends")
+        cmake_path(GET output_file_path PARENT_PATH output_file_dir)
 
         string(REPLACE ";" "\\;" cmd_line "${cmd_line}")
 
-        add_custom_command(OUTPUT ${output_file_path}
-            BYPRODUCTS ${depfile_output_path}
-            COMMAND ${SHADERTOOL_PROG} "--fxc=${FXC_COMPILER}" "--options=${cmd_line}" "--depfile=${depfile_output_path}"
-            WORKING_DIRECTORY ${entry_file_dir}
-            DEPENDS ${entry_file_path} ${objects_output_dir} ${intermediate_dir}
-            DEPFILE ${depfile_output_path}
-            COMMAND_EXPAND_LISTS
-        )
+        if(NVFLEX_WINDOWS_CLANG_CROSS)
+            add_custom_command(OUTPUT ${output_file_path}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${output_file_dir}
+                COMMAND ${SHADERTOOL_PROG}
+                    "--fxc=${FXC_COMPILER}"
+                    "--options=${cmd_line}"
+                WORKING_DIRECTORY ${entry_file_dir}
+                DEPENDS ${entry_file_path}
+                COMMAND_EXPAND_LISTS
+                VERBATIM
+            )
+        else()
+            add_custom_command(OUTPUT ${output_file_path}
+                BYPRODUCTS ${depfile_output_path}
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    ${output_file_dir}
+                    ${depfile_output_dir}
+                COMMAND ${SHADERTOOL_PROG}
+                    "--fxc=${FXC_COMPILER}"
+                    "--options=${cmd_line}"
+                    "--depfile=${depfile_output_path}"
+                WORKING_DIRECTORY ${entry_file_dir}
+                DEPENDS ${entry_file_path}
+                DEPFILE ${depfile_output_path}
+                COMMAND_EXPAND_LISTS
+                VERBATIM
+            )
+        endif()
     endforeach(cmd shader_cfg_lines)
 
     add_custom_target(

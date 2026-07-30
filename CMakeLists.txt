@@ -5,12 +5,27 @@ project(NvFlex VERSION 1.2.0)
 # NvFlow config options
 option(NVFLEX_USE_MICROSOFT_VLD "NvFlow use Microsoft VLD library to detect user space moemory leakage" OFF)
 
-option(NVFLEX_USE_REVERSED_LIB "NvFlex demo use reversed dll" OFF)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
+if(MSVC)
+    add_compile_definitions(
+        _HAS_ITERATOR_DEBUGGING=0
+        _ITERATOR_DEBUG_LEVEL=0)
+
+    if(NVFLEX_WINDOWS_CLANG_CROSS)
+        add_compile_options(
+            "$<$<CONFIG:Debug>:-gdwarf>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-fdelayed-template-parsing>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-Wno-address-of-temporary>")
+        add_link_options("$<$<CONFIG:Debug>:/debug:dwarf>")
+    endif()
+endif()
 
 include(cmake/CMakeRC.cmake)
 include(cmake/ShaderTools.cmake)
 include(cmake/CopyAsset.cmake)
-include(cmake/FindVLD.cmake)
 
 # NvFlexLib
 add_library(NvFlexLib SHARED IMPORTED)

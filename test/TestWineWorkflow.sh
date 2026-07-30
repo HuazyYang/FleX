@@ -29,17 +29,17 @@ assert_not_contains()
 }
 
 workflow_scripts=(
-    "$repo_root/Tools/wine/bootstrap-toolchain.sh"
-    "$repo_root/Tools/wine/check-prefix.sh"
-    "$repo_root/Tools/wine/run-demo.sh"
-    "$repo_root/Tools/wine/debug-server.sh"
-    "$repo_root/Tools/wine/clang-cl.sh"
-    "$repo_root/Tools/wine/fxc.sh"
-    "$repo_root/Tools/wine/lld-link.sh"
-    "$repo_root/Tools/wine/llvm-lib.sh"
-    "$repo_root/Tools/wine/llvm-mt.sh"
-    "$repo_root/Tools/wine/llvm-rc.sh"
-    "$repo_root/Tools/wine/wine-shader-tool.sh"
+    "$repo_root/scripts/wine/bootstrap-toolchain.sh"
+    "$repo_root/scripts/wine/check-prefix.sh"
+    "$repo_root/scripts/wine/run-demo.sh"
+    "$repo_root/scripts/wine/debug-server.sh"
+    "$repo_root/scripts/wine/clang-cl.sh"
+    "$repo_root/scripts/wine/fxc.sh"
+    "$repo_root/scripts/wine/lld-link.sh"
+    "$repo_root/scripts/wine/llvm-lib.sh"
+    "$repo_root/scripts/wine/llvm-mt.sh"
+    "$repo_root/scripts/wine/llvm-rc.sh"
+    "$repo_root/scripts/wine/wine-shader-tool.sh"
 )
 
 for script_path in "${workflow_scripts[@]}"
@@ -47,6 +47,13 @@ do
     test -x "$script_path" || fail "missing executable script: $script_path"
     bash -n "$script_path"
 done
+
+detected_repo_root=$(
+    bash -c 'source "$1"; nvflex_repo_root' _ \
+        "$repo_root/scripts/wine/common.sh"
+)
+[[ "$detected_repo_root" == "$repo_root" ]] ||
+    fail "workflow scripts detected the wrong repository root: $detected_repo_root"
 
 test -x "$repo_root/test/fakes/fake-wine.sh" ||
     fail 'fake Wine test helper is not executable'
@@ -114,7 +121,7 @@ touch \
 
 prefix_output=$(
     NVFLEX_WINEPREFIX="$fake_prefix" \
-        "$repo_root/Tools/wine/check-prefix.sh"
+        "$repo_root/scripts/wine/check-prefix.sh"
 )
 assert_contains "$prefix_output" 'Wine prefix is ready'
 
@@ -122,7 +129,7 @@ dx11_output=$(
     NVFLEX_BUILD_ROOT="$fake_build_root" \
     NVFLEX_WINEPREFIX="$fake_prefix" \
     NVFLEX_RUN_ROOT="$fake_run_root" \
-        "$repo_root/Tools/wine/run-demo.sh" \
+        "$repo_root/scripts/wine/run-demo.sh" \
         --dry-run --config Debug --rhi dx11 --dev 1
 )
 assert_contains "$dx11_output" '--dev=1'
@@ -134,7 +141,7 @@ dx12_output=$(
     NVFLEX_BUILD_ROOT="$fake_build_root" \
     NVFLEX_WINEPREFIX="$fake_prefix" \
     NVFLEX_RUN_ROOT="$fake_run_root" \
-        "$repo_root/Tools/wine/run-demo.sh" \
+        "$repo_root/scripts/wine/run-demo.sh" \
         --dry-run --config Debug --rhi dx12 --dev 1
 )
 assert_contains "$dx12_output" '--d3d12'
@@ -142,7 +149,7 @@ assert_contains "$dx12_output" '--dev=1'
 
 if NVFLEX_BUILD_ROOT="$fake_build_root" \
     NVFLEX_WINEPREFIX="$fake_prefix" \
-        "$repo_root/Tools/wine/run-demo.sh" \
+        "$repo_root/scripts/wine/run-demo.sh" \
         --dry-run --rhi metal >"$test_root/invalid-rhi.out" 2>&1
 then
     fail 'invalid RHI unexpectedly passed validation'
@@ -157,7 +164,7 @@ NVFLEX_BUILD_ROOT="$fake_build_root" \
 NVFLEX_WINEPREFIX="$fake_prefix" \
 NVFLEX_RUN_ROOT="$fake_run_root" \
 NVFLEX_WINE_BIN="$repo_root/test/fakes/fake-wine.sh" \
-    "$repo_root/Tools/wine/run-demo.sh" \
+    "$repo_root/scripts/wine/run-demo.sh" \
     --config Debug --rhi d3d11 --dev 1 --smoke-seconds 1
 smoke_log=$(<"$fake_wine_log")
 assert_contains "$smoke_log" 'NvFlexDemoDebugD3D_win64.exe'
@@ -168,7 +175,7 @@ if FAKE_WINE_MODE=fail \
     NVFLEX_WINEPREFIX="$fake_prefix" \
     NVFLEX_RUN_ROOT="$fake_run_root" \
     NVFLEX_WINE_BIN="$repo_root/test/fakes/fake-wine.sh" \
-        "$repo_root/Tools/wine/run-demo.sh" \
+        "$repo_root/scripts/wine/run-demo.sh" \
         --config Debug --rhi d3d12 --dev 1 --smoke-seconds 2 \
         >"$test_root/early-failure.out" 2>&1
 then
@@ -193,6 +200,10 @@ assert len(wine_configs) == 2
 assert {entry["type"] for entry in wine_configs} == {"cppdbg"}
 assert {entry["launchCompleteCommand"] for entry in wine_configs} == {"None"}
 assert all(entry["symbolLoadInfo"]["loadAll"] is False for entry in wine_configs)
+assert all(entry["internalConsoleOptions"] == "openOnSessionStart" for entry in wine_configs)
+assert all(entry["filterStdout"] is True for entry in wine_configs)
+assert all(entry["filterStderr"] is True for entry in wine_configs)
+assert all(entry["logging"]["programOutput"] is True for entry in wine_configs)
 PY
 
 printf 'FleX Wine workflow contract tests passed.\n'

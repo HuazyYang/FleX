@@ -28,9 +28,7 @@
 #pragma once
 
 #include <stdarg.h>
-#if NVFLEX_USE_REVERSED_LIB
-#include <nvflex/NvFlexContextExt.h>
-#endif
+#include <nvflex_runtime.h>
 
 // disable some warnings
 #if _WIN32
@@ -797,45 +795,47 @@ NvFlexDistanceFieldId CreateSDF(const char* meshFile, int dim, float margin = 0.
 	for (int i = 0; i < numVoxels; ++i)
 		pfm.m_data[i] += expand;
 
-#if NVFLEX_USE_REVERSED_LIB
-    NvFlexTexture3DDesc sdfDesc = {};
-    NvFlexTexture3D* sdfTex;
+    NvFlexDistanceFieldId sdf;
 
-    sdfDesc.dim = { pfm.m_width, pfm.m_height, pfm.m_depth };
-    sdfDesc.format = eNvFlexFormat_r32_float;
-    sdfDesc.uploadAccess = 1;
+    if(NvFlexRuntime::Get().GetBackend() == NvFlexRuntime::eBackendReversed) {
+        NvFlexTexture3DDesc sdfDesc = {};
+        NvFlexTexture3D* sdfTex;
 
-    NvFlexContext* context;
-    NvFlexGetDeviceAndContext(g_flexLib, nullptr, (void**)&context);
+        sdfDesc.dim = {pfm.m_width, pfm.m_height, pfm.m_depth};
+        sdfDesc.format = eNvFlexFormat_r32_float;
+        sdfDesc.uploadAccess = 1;
 
-    sdfTex = NvFlexCreateTexture3D(context, &sdfDesc);
-    auto mapped = NvFlexTexture3DMap(context, sdfTex);
-    const uint8_t* sptr = (const uint8_t *)pfm.m_data;
-    uint8_t* dptrZ = (uint8_t *)mapped.data, *dptrY;
-    NvFlexUint srcRowPitch = pfm.m_width * sizeof(float);
-    const NvFlexUint numBytesInRow = srcRowPitch;
+        NvFlexContext* context;
+        NvFlexGetDeviceAndContext(g_flexLib, nullptr, (void**)&context);
 
-    for (NvFlexUint z = 0; z < sdfDesc.dim.z; ++z, dptrZ += mapped.depthPitch) {
-        dptrY = dptrZ;
-        for (NvFlexUint y = 0; y < sdfDesc.dim.y;
-             ++y, sptr += srcRowPitch, dptrY += mapped.rowPitch)
-            memcpy(dptrY, sptr, numBytesInRow);
+        sdfTex = NvFlexCreateTexture3D(context, &sdfDesc);
+        auto mapped = NvFlexTexture3DMap(context, sdfTex);
+        const uint8_t* sptr = (const uint8_t*)pfm.m_data;
+        uint8_t *dptrZ = (uint8_t*)mapped.data, *dptrY;
+        NvFlexUint srcRowPitch = pfm.m_width * sizeof(float);
+        const NvFlexUint numBytesInRow = srcRowPitch;
+
+        for (NvFlexUint z = 0; z < sdfDesc.dim.z; ++z, dptrZ += mapped.depthPitch) {
+            dptrY = dptrZ;
+            for (NvFlexUint y = 0; y < sdfDesc.dim.y;
+                 ++y, sptr += srcRowPitch, dptrY += mapped.rowPitch)
+                memcpy(dptrY, sptr, numBytesInRow);
+        }
+
+        NvFlexTexture3DUnmap(context, sdfTex);
+
+        sdf = NvFlexCreateDistanceField(g_flexLib);
+        NvFlexUpdateDistanceField2(g_flexLib, sdf, sdfTex);
+        NvFlexReleaseTexture3D(sdfTex);
+    } else {
+        NvFlexVector<float> field(g_flexLib);
+        field.assign(pfm.m_data, pfm.m_width * pfm.m_height * pfm.m_depth);
+        field.unmap();
+
+        // set up flex collision shape
+        sdf = NvFlexCreateDistanceField(g_flexLib);
+        NvFlexUpdateDistanceField(g_flexLib, sdf, dim, dim, dim, field.buffer);
     }
-
-    NvFlexTexture3DUnmap(context, sdfTex);
-
-    NvFlexDistanceFieldId sdf = NvFlexCreateDistanceField(g_flexLib);
-    NvFlexUpdateDistanceField2(g_flexLib, sdf, sdfTex);
-    NvFlexReleaseTexture3D(sdfTex);
-#else
-	NvFlexVector<float> field(g_flexLib);
-	field.assign(pfm.m_data, pfm.m_width*pfm.m_height*pfm.m_depth);
-	field.unmap();
-
-	// set up flex collision shape
-	NvFlexDistanceFieldId sdf = NvFlexCreateDistanceField(g_flexLib);
-	NvFlexUpdateDistanceField(g_flexLib, sdf, dim, dim, dim, field.buffer);
-#endif
 
     // entry in the collision->render map
     g_fields[sdf] = CreateGpuMesh(mesh);

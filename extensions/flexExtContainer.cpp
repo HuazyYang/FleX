@@ -32,7 +32,6 @@
 #include "../core/core.h"
 #include "../core/maths.h"
 
-#include "../include/NvFlex.h"
 #include "../include/NvFlexExt.h"
 
 class Bitmap

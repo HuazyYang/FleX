@@ -11,21 +11,38 @@
 
 #include "renderParamsD3D.h"
 
+namespace
+{
+DirectX::XMMATRIX LoadMatrix(const Matrix44& matrix)
+{
+	return DirectX::XMLoadFloat4x4(
+		reinterpret_cast<const DirectX::XMFLOAT4X4*>(&matrix));
+}
+
+DirectX::XMFLOAT4X4 StoreMatrix(DirectX::FXMMATRIX matrix)
+{
+	DirectX::XMFLOAT4X4 result;
+	DirectX::XMStoreFloat4x4(&result, matrix);
+	return result;
+}
+}
+
 /* static */void RenderParamsUtilD3D::calcShadowParams(Vec3 lightPos, Vec3 lightTarget, Matrix44 lightTransform, float shadowBias, ShadowParamsD3D* paramsOut)
 {
-	paramsOut->lightTransform = (DirectX::XMMATRIX&)(convertGLToD3DProjection(lightTransform));
-	paramsOut->lightPos = (float3&)lightPos;
-	paramsOut->lightDir = (float3&)Normalize(lightTarget - lightPos);
+	paramsOut->lightTransform = LoadMatrix(convertGLToD3DProjection(lightTransform));
+	paramsOut->lightPos = float3(lightPos.x, lightPos.y, lightPos.z);
+	const Vec3 lightDir = Normalize(lightTarget - lightPos);
+	paramsOut->lightDir = float3(lightDir.x, lightDir.y, lightDir.z);
 	paramsOut->bias = shadowBias;
 
-	const Vec4 taps[] =
+	const float4 taps[] =
 	{
-		Vec2(-0.326212f,-0.40581f), Vec2(-0.840144f,-0.07358f),
-		Vec2(-0.695914f,0.457137f), Vec2(-0.203345f,0.620716f),
-		Vec2(0.96234f,-0.194983f), Vec2(0.473434f,-0.480026f),
-		Vec2(0.519456f,0.767022f), Vec2(0.185461f,-0.893124f),
-		Vec2(0.507431f,0.064425f), Vec2(0.89642f,0.412458f),
-		Vec2(-0.32194f,-0.932615f), Vec2(-0.791559f,-0.59771f)
+		float4(-0.326212f,-0.40581f, 0.0f, 0.0f), float4(-0.840144f,-0.07358f, 0.0f, 0.0f),
+		float4(-0.695914f,0.457137f, 0.0f, 0.0f), float4(-0.203345f,0.620716f, 0.0f, 0.0f),
+		float4(0.96234f,-0.194983f, 0.0f, 0.0f), float4(0.473434f,-0.480026f, 0.0f, 0.0f),
+		float4(0.519456f,0.767022f, 0.0f, 0.0f), float4(0.185461f,-0.893124f, 0.0f, 0.0f),
+		float4(0.507431f,0.064425f, 0.0f, 0.0f), float4(0.89642f,0.412458f, 0.0f, 0.0f),
+		float4(-0.32194f,-0.932615f, 0.0f, 0.0f), float4(-0.791559f,-0.59771f, 0.0f, 0.0f)
 	};
 	memcpy(paramsOut->shadowTaps, taps, sizeof(taps));
 }
@@ -43,12 +60,10 @@ Matrix44 RenderParamsUtilD3D::convertGLToD3DProjection(const Matrix44& proj)
 
 /* static */void RenderParamsUtilD3D::calcMeshConstantBuffer(const MeshDrawParamsD3D& params, Hlsl::MeshShaderConst& constBuf)
 {
-	constBuf.modelViewProjection = (float4x4&)(XMMatrixMultiply(XMMatrixMultiply(params.model, params.view), params.projection));
-
-	constBuf.modelView = (float4x4&)XMMatrixMultiply(params.model, params.view);
-
-	constBuf.objectTransform = (float4x4&)params.objectTransform;
-	constBuf.lightTransform = (float4x4&)params.lightTransform;
+	constBuf.modelViewProjection = StoreMatrix(XMMatrixMultiply(XMMatrixMultiply(params.model, params.view), params.projection));
+	constBuf.modelView = StoreMatrix(XMMatrixMultiply(params.model, params.view));
+	constBuf.objectTransform = params.objectTransform;
+	constBuf.lightTransform = StoreMatrix(params.lightTransform);
 
 	constBuf.clipPlane = params.clipPlane;
 	constBuf.fogColor = params.fogColor;
@@ -72,11 +87,11 @@ Matrix44 RenderParamsUtilD3D::convertGLToD3DProjection(const Matrix44& proj)
 
 /* static */void RenderParamsUtilD3D::calcFluidConstantBuffer(const FluidDrawParamsD3D& params, Hlsl::FluidShaderConst& constBuf)
 {
-	constBuf.modelViewProjection = (Hlsl::float4x4&)(XMMatrixMultiply(XMMatrixMultiply(params.model, params.view), params.projection));
-	constBuf.modelView = (Hlsl::float4x4&)XMMatrixMultiply(params.model, params.view);
-	constBuf.projection = (Hlsl::float4x4&)params.projection;
-	constBuf.inverseModelView = (Hlsl::float4x4&)XMMatrixInverse(nullptr, XMMatrixMultiply(params.model, params.view));
-	constBuf.inverseProjection = (Hlsl::float4x4&)XMMatrixInverse(nullptr, params.projection);
+	constBuf.modelViewProjection = StoreMatrix(XMMatrixMultiply(XMMatrixMultiply(params.model, params.view), params.projection));
+	constBuf.modelView = StoreMatrix(XMMatrixMultiply(params.model, params.view));
+	constBuf.projection = StoreMatrix(params.projection);
+	constBuf.inverseModelView = StoreMatrix(XMMatrixInverse(nullptr, XMMatrixMultiply(params.model, params.view)));
+	constBuf.inverseProjection = StoreMatrix(XMMatrixInverse(nullptr, params.projection));
 
 	//constBuf.invTexScale = invTexScale;
 	//constBuf.invProjection = invProjection;
@@ -95,10 +110,10 @@ Matrix44 RenderParamsUtilD3D::convertGLToD3DProjection(const Matrix44& proj)
 	using namespace DirectX;
 
 	XMMATRIX modelViewProj = XMMatrixMultiply(XMMatrixMultiply(params.model, params.view), params.projection);
-	constBuf.modelViewProjection = (Hlsl::float4x4&)modelViewProj;
+	constBuf.modelViewProjection = StoreMatrix(modelViewProj);
 	XMMATRIX modelView = XMMatrixMultiply(params.model, params.view);
-	constBuf.modelView = (Hlsl::float4x4&)modelView;
-	constBuf.projection = (Hlsl::float4x4&)params.projection;
+	constBuf.modelView = StoreMatrix(modelView);
+	constBuf.projection = StoreMatrix(params.projection);
 
 	constBuf.motionBlurScale = params.motionScale;
 	constBuf.diffuseRadius = params.diffuseRadius;
@@ -106,7 +121,7 @@ Matrix44 RenderParamsUtilD3D::convertGLToD3DProjection(const Matrix44& proj)
 	constBuf.spotMin = params.spotMin;
 	constBuf.spotMax = params.spotMax;
 
-	constBuf.lightTransform = (Hlsl::float4x4&)params.lightTransform;
+	constBuf.lightTransform = StoreMatrix(params.lightTransform);
 	constBuf.lightPos = params.lightPos;
 	constBuf.lightDir = params.lightDir;
 	constBuf.color = params.color;
@@ -116,13 +131,13 @@ Matrix44 RenderParamsUtilD3D::convertGLToD3DProjection(const Matrix44& proj)
 
 /* static */void RenderParamsUtilD3D::calcFluidCompositeConstantBuffer(const FluidDrawParamsD3D& params, Hlsl::FluidShaderConst& constBuf)
 {
-	constBuf.modelViewProjection = (Hlsl::float4x4&)(XMMatrixMultiply(XMMatrixMultiply(params.model, params.view), params.projection));
-	constBuf.modelView = (Hlsl::float4x4&)XMMatrixMultiply(params.model, params.view);
-	constBuf.projection = (Hlsl::float4x4&)params.projection;
-	constBuf.inverseModelView = (Hlsl::float4x4&)XMMatrixInverse(nullptr, XMMatrixMultiply(params.model, params.view));
-	constBuf.inverseProjection = (Hlsl::float4x4&)XMMatrixInverse(nullptr, params.projection);
+	constBuf.modelViewProjection = StoreMatrix(XMMatrixMultiply(XMMatrixMultiply(params.model, params.view), params.projection));
+	constBuf.modelView = StoreMatrix(XMMatrixMultiply(params.model, params.view));
+	constBuf.projection = StoreMatrix(params.projection);
+	constBuf.inverseModelView = StoreMatrix(XMMatrixInverse(nullptr, XMMatrixMultiply(params.model, params.view)));
+	constBuf.inverseProjection = StoreMatrix(XMMatrixInverse(nullptr, params.projection));
 
-	constBuf.lightTransform = (Hlsl::float4x4&)params.lightTransform;
+	constBuf.lightTransform = StoreMatrix(params.lightTransform);
 
 	constBuf.invTexScale = params.invTexScale;
 
@@ -160,15 +175,15 @@ Matrix44 RenderParamsUtilD3D::convertGLToD3DProjection(const Matrix44& proj)
 {
 	using namespace DirectX;
 
-	constBuf.modelView = (float4x4&)XMMatrixMultiply(params.model, params.view);
-	constBuf.projection = (float4x4&)params.projection;
+	constBuf.modelView = StoreMatrix(XMMatrixMultiply(params.model, params.view));
+	constBuf.projection = StoreMatrix(params.projection);
 
 	constBuf.pointRadius = params.pointRadius;
 	constBuf.pointScale = params.pointScale;
 	constBuf.spotMin = params.spotMin;
 	constBuf.spotMax = params.spotMax;
 
-	constBuf.lightTransform = (float4x4&)params.lightTransform;
+	constBuf.lightTransform = StoreMatrix(params.lightTransform);
 	constBuf.lightPos = params.lightPos;
 	constBuf.lightDir = params.lightDir;
 
