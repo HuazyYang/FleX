@@ -36,6 +36,11 @@ set_target_properties(NvFlexExt PROPERTIES
     CXX_STANDARD 17
     OUTPUT_NAME ${NvFlexExt_OUTNAME}
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded"
+)
+target_compile_options(NvFlexExt PRIVATE
+    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/O2>
+    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/Ob2>
 )
 target_compile_definitions(NvFlexExt PRIVATE
     "_CONSOLE"

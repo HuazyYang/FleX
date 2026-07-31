@@ -29,6 +29,11 @@ set_target_properties(DemoAppD3D PROPERTIES
     OUTPUT_NAME ${DemoAppD3D_OUTNAME}
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
     PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded"
+)
+target_compile_options(DemoAppD3D PRIVATE
+    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/O2>
+    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/Ob2>
 )
 target_include_directories(DemoAppD3D PRIVATE
     "$<BUILD_INTERFACE:${DemoAppD3D_SHADER_HEADER_OUTPUT_DIR}/../>"

@@ -2,6 +2,16 @@ cmake_minimum_required(VERSION 3.22)
 
 project(NvFlex VERSION 1.2.0)
 
+if(MSVC)
+    # The packaged "Debug" demo uses the debug Flex DLL, but the application itself is
+    # optimized and linked to the static release CRT. MSVC rejects /O2 while CMake's
+    # default /RTC1 is present, so remove the unoptimized Debug defaults here and let the
+    # demo/extension targets opt in to the packaged settings.
+    string(REGEX REPLACE "(^| )[/-]Ob0( |$)" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REGEX REPLACE "(^| )[/-]Od( |$)" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REGEX REPLACE "(^| )[/-]RTC1( |$)" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+endif()
+
 # NvFlow config options
 option(NVFLEX_USE_MICROSOFT_VLD "NvFlow use Microsoft VLD library to detect user space moemory leakage" OFF)
 
