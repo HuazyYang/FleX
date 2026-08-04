@@ -2922,7 +2922,11 @@ void SDLMainLoop()
 #endif
 }
 
-static void parseArgs(int argc, char* argv[]) {
+struct Options {
+    const char *sceneName;
+};
+
+static void parseArgs(int argc, char* argv[], Options *opts) {
     static const cag_option options[] = {
         {'R', NULL, "dev", "BOOL", "Run Flex reversed backend"},
         {'D', NULL, "device", "IDX", "Device index"},
@@ -2940,12 +2944,15 @@ static void parseArgs(int argc, char* argv[]) {
         {'I', NULL, "disableinterop", NULL, "Disable graphics/Flex interop"},
         {'C', NULL, "asynccompute", "BOOL", "Enable async compute"},
         {'G', NULL, "graphics", "N", "Graphics API: 0=ogl,1=dx11,2=dx12"},
-        {'S', NULL, "scene", "N", "Initial scene index"},
+        {'S', NULL, "scene", "Scene Name", "Initial scene name"},
         {'Y', NULL, "playback-mode", "MODE", "Playback mode: none, read, write"},
         {'Z', NULL, "playback-range", "start,end", "Playback record physical frame range" },
         {'h', "h", "help", NULL, "Usage"}};
 
     cag_option_context context;
+
+    memset(opts, 0, sizeof(*opts));
+
     cag_option_init(&context, options, CAG_ARRAY_SIZE(options), argc, argv);
 
     while (cag_option_fetch(&context)) {
@@ -2962,18 +2969,15 @@ static void parseArgs(int argc, char* argv[]) {
                 cag_option_printer(options, CAG_ARRAY_SIZE(options), (cag_printer)fprintf, stdout);
                 exit(0);
             case 'R':
-            if(value)
                 g_useFlexRev = atoi(value) != 0;
                 break;
 
             case 'D':
-                if (value)
-                    g_device = atoi(value);
+                g_device = atoi(value);
                 break;
 
             case 'E':
-                if (value)
-                    g_extensions = atoi(value) != 0;
+                g_extensions = atoi(value) != 0;
                 break;
 
             case 'B':
@@ -2999,20 +3003,18 @@ static void parseArgs(int argc, char* argv[]) {
                 break;
 
             case 'M':
-                if (value)
-                    g_msaaSamples = atoi(value);
+                g_msaaSamples = atoi(value);
                 break;
 
             case 'F': {
-                int w = 1280, h = 720;
-                if (!value) {
+                int w, h;
+                if (sscanf(value, "%dx%d", &w, &h) == 2) {
                     g_screenWidth = w;
                     g_screenHeight = h;
                     g_fullscreen = true;
-                } else if (sscanf(value, "%dx%d", &w, &h) == 2) {
-                    g_screenWidth = w;
-                    g_screenHeight = h;
-                    g_fullscreen = true;
+                } else {
+                    fprintf(stderr, "--fullscreen option value must be <width>x<height>\n");
+                    exit(-1);
                 }
                 break;
             }
@@ -3032,13 +3034,11 @@ static void parseArgs(int argc, char* argv[]) {
             }
 
             case 'V':
-                if (value)
-                    g_vsync = atoi(value) != 0;
+                g_vsync = atoi(value) != 0;
                 break;
 
             case 'P':
-                if (value)
-                    g_numExtraMultiplier = atoi(value);
+                g_numExtraMultiplier = atoi(value);
                 break;
 
             case 't':
@@ -3050,12 +3050,11 @@ static void parseArgs(int argc, char* argv[]) {
                 break;
 
             case 'C':
-                if (value)
-                    g_useAsyncCompute = atoi(value) != 0;
+                g_useAsyncCompute = atoi(value) != 0;
                 break;
 
             case 'G':
-                if (value) {
+                {
                     int d = atoi(value);
                     if (d >= 0 && d <= 2)
                         g_graphics = d;
@@ -3063,8 +3062,7 @@ static void parseArgs(int argc, char* argv[]) {
                 break;
 
             case 'S':
-                if (value)
-                    g_scene = atoi(value);
+                opts->sceneName = value;
                 break;
 
             case 'Y':
@@ -3094,9 +3092,42 @@ static void parseArgs(int argc, char* argv[]) {
     }
 }
 
+int resolveInitialSceneIndex(const char *sceneName, int *sceneIndex) {
+    int index = -1;
+
+    if(sceneName == NULL) {
+        if(sceneIndex) *sceneIndex = 0;
+        return 0;
+    }
+
+    for(int i = 0; i < (int)g_scenes.size(); ++i) {
+        if(_stricmp(g_scenes[i]->GetName(), sceneName) == 0) {
+            index = i;
+            break;
+        }
+    }
+
+    if(index == -1) {
+        fprintf(stderr, "Invalid scene name: %s\n", sceneName);
+        // list all scenes
+        fprintf(stdout, "Available scenes: {\n");
+        for(int i = 0; i < (int)g_scenes.size(); ++i) {
+            fprintf(stdout, "    %s\n", g_scenes[i]->GetName());
+        }
+        fprintf(stdout, "}\n");
+        return -1;
+    }
+
+    if (sceneIndex)
+        *sceneIndex = index;
+
+    return 0;
+}
+
 int main(int argc, char* argv[])
 {
-    parseArgs(argc, argv);
+    Options opts;
+    parseArgs(argc, argv, &opts);
 
 	// opening scene
 	g_scenes.push_back(new PotPourri("Pot Pourri"));
@@ -3325,11 +3356,10 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Goo", true));
 	g_scenes.push_back(new BunnyBath("Bunny Bath Dam", true));
 
-	if (g_scene < 0 || g_scene >= int(g_scenes.size()))
-	{
-		fprintf(stderr, "--scene must be in the range 0,%d\n", int(g_scenes.size()) - 1);
-		exit(-1);
-	}
+    if(resolveInitialSceneIndex(opts.sceneName, &g_scene) < 0) {
+        // TODO: cleanup C++ objects and free memory gracefully.
+        return -1;
+    }
 
 	// init graphics
 	RenderInitOptions options;

@@ -5,6 +5,8 @@ else()
     set(NVFLEX__USE_MICROSOFT_VLD 0)
 endif()
 
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+
 nvflow_add_shader_object_headers(
     TARGET NvFlexShaders
     SHADER_PROFILE 5_0
@@ -36,7 +38,6 @@ add_library(NvFlexRev SHARED
 target_compile_definitions(NvFlexRev PRIVATE "NOMINMAX=1" "_CRT_SECURE_NO_WARNINGS" "NVFLEX__USE_MICROSOFT_VLD=${NVFLEX__USE_MICROSOFT_VLD}")
 set_target_properties(
     NvFlexRev PROPERTIES
-    CXX_STANDARD 17
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
     PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
 )
@@ -47,5 +48,6 @@ target_include_directories(
 )
 target_link_libraries(NvFlexRev PRIVATE "dxguid.lib" NVTX NVAPI AGS NvFlexDXBCBinaryLib "$<${NVFLEX__USE_MICROSOFT_VLD}:vld>")
 add_dependencies(NvFlexRev NvFlexShaders)
+
 
 

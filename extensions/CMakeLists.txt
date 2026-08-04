@@ -1,3 +1,4 @@
+demo_apply_msvc_debug_optimizations()
 
 set(NvFlexExt_OUTNAME
     "NvFlexExt$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:Debug>$<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:Release>D3D_win64")
@@ -33,14 +34,8 @@ set(NvFlexExt_SOURCES
 
 add_library(NvFlexExt SHARED ${NvFlexExt_SOURCES})
 set_target_properties(NvFlexExt PROPERTIES
-    CXX_STANDARD 17
     OUTPUT_NAME ${NvFlexExt_OUTNAME}
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-    MSVC_RUNTIME_LIBRARY "MultiThreaded"
-)
-target_compile_options(NvFlexExt PRIVATE
-    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/O2>
-    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/Ob2>
 )
 target_compile_definitions(NvFlexExt PRIVATE
     "_CONSOLE"

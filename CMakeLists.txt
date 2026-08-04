@@ -2,22 +2,37 @@ cmake_minimum_required(VERSION 3.22)
 
 project(NvFlex VERSION 1.2.0)
 
-if(MSVC)
-    # The packaged "Debug" demo uses the debug Flex DLL, but the application itself is
-    # optimized and linked to the static release CRT. MSVC rejects /O2 while CMake's
-    # default /RTC1 is present, so remove the unoptimized Debug defaults here and let the
-    # demo/extension targets opt in to the packaged settings.
-    string(REGEX REPLACE "(^| )[/-]Ob0( |$)" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
-    string(REGEX REPLACE "(^| )[/-]Od( |$)" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
-    string(REGEX REPLACE "(^| )[/-]RTC1( |$)" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
-endif()
-
 # NvFlow config options
 option(NVFLEX_USE_MICROSOFT_VLD "NvFlow use Microsoft VLD library to detect user space moemory leakage" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
+
+if(MSVC)
+    function(demo_apply_msvc_debug_optimizations)
+        if(NOT DEFINED NVFLEX_MSVC_OPTIONS_STACK)
+            set(NVFLEX_MSVC_OPTIONS_STACK "" PARENT_SCOPE)
+        endif()
+
+        list(APPEND NVFLEX_MSVC_OPTIONS_STACK "${CMAKE_C_FLAGS_DEBUG}" "${CMAKE_CXX_FLAGS_DEBUG}" "${CMAKE_MSVC_RUNTIME_LIBRARY}")
+
+        string(REGEX REPLACE "(^| )[/-]Ob0( |$)" "\\1/Ob2\\2" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+        string(REGEX REPLACE "(^| )[/-]Od( |$)" "\\1/O2\\2" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+        string(REGEX REPLACE "(^| )[/-]RTC1( |$)" "\\1\\2" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+        set(CMAKE_CXX_FLAGS_DEBUG ${CMAKE_CXX_FLAGS_DEBUG} PARENT_SCOPE)
+
+        string(REGEX REPLACE "(^| )[/-]Ob0( |$)" "\\1/Ob2\\2" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+        string(REGEX REPLACE "(^| )[/-]Od( |$)" "\\1/O2\\2" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+        string(REGEX REPLACE "(^| )[/-]RTC1( |$)" "\\1\\2" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+        set(CMAKE_C_FLAGS_DEBUG ${CMAKE_C_FLAGS_DEBUG} PARENT_SCOPE)
+
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" PARENT_SCOPE)
+    endfunction(demo_apply_msvc_debug_optimizations)
+else()
+    function(demo_apply_msvc_debug_optimizations)
+    endfunction(demo_apply_msvc_debug_optimizations)
+endif()
 
 if(MSVC)
     add_compile_definitions(

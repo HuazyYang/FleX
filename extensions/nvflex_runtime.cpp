@@ -70,7 +70,7 @@ std::wstring ResolveLibraryPath(const std::wstring &path, NvFlexRuntime::Backend
     if (basePath.has_extension() && basePath.extension().wstring().compare(L".dll") == 0)
         return basePath.wstring();
 
-#if _DEBUG
+#if 1
     const wchar_t *dllName =
         backend == NvFlexRuntime::eBackendReversed ? L"NvFlexRev.dll" :
                                                      L"NvFlexDebugD3D_x64.dll";
