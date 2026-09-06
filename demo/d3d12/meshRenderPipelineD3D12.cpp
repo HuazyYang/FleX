@@ -13,16 +13,16 @@
 #include "meshRenderPipelineD3D12.h"
 
 // Shaders
-#include "../d3d/shaders/meshVS.hlsl.h"
-#include "../d3d/shaders/meshPS.hlsl.h"
-#include "../d3d/shaders/meshShadowPS.hlsl.h"
+#include "../d3d/shaders/fxc/meshVS.hlsl.h"
+#include "../d3d/shaders/fxc/meshPS.hlsl.h"
+#include "../d3d/shaders/fxc/meshShadowPS.hlsl.h"
 
 namespace FlexSample {
 
 // Make async compute benchmark shader have a unique name
 namespace AsyncComputeBench
 {
-#include "../d3d/shaders/meshAsyncComputeBenchPS.hlsl.h"
+#include "../d3d/shaders/fxc/meshAsyncComputeBenchPS.hlsl.h"
 }
 
 MeshRenderPipelineD3D12::MeshRenderPipelineD3D12():

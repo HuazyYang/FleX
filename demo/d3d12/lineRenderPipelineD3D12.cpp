@@ -12,8 +12,8 @@
 #include "lineRenderPipelineD3D12.h"
 
 // Shaders
-#include "../d3d/shaders/debugLineVS.hlsl.h"
-#include "../d3d/shaders/debugLinePS.hlsl.h"
+#include "../d3d/shaders/fxc/debugLineVS.hlsl.h"
+#include "../d3d/shaders/fxc/debugLinePS.hlsl.h"
 
 namespace FlexSample {
 

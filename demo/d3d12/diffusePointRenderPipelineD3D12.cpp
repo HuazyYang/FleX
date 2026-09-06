@@ -10,9 +10,9 @@
 #include "../d3d/shaderCommonD3D.h"
 
 // Shaders
-#include "../d3d/shaders/diffuseVS.hlsl.h"
-#include "../d3d/shaders/diffuseGS.hlsl.h"
-#include "../d3d/shaders/diffusePS.hlsl.h"
+#include "../d3d/shaders/fxc/diffuseVS.hlsl.h"
+#include "../d3d/shaders/fxc/diffuseGS.hlsl.h"
+#include "../d3d/shaders/fxc/diffusePS.hlsl.h"
 
 // this
 #include "diffusePointRenderPipelineD3D12.h"

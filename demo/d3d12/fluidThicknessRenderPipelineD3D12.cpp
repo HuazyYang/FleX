@@ -10,9 +10,9 @@
 #include "meshRendererD3D12.h"
 #include "../d3d/shaderCommonD3D.h"
 
-#include "../d3d/shaders/pointThicknessVS.hlsl.h"
-#include "../d3d/shaders/pointThicknessGS.hlsl.h"
-#include "../d3d/shaders/pointThicknessPS.hlsl.h"
+#include "../d3d/shaders/fxc/pointThicknessVS.hlsl.h"
+#include "../d3d/shaders/fxc/pointThicknessGS.hlsl.h"
+#include "../d3d/shaders/fxc/pointThicknessPS.hlsl.h"
 
 // this
 #include "fluidThicknessRenderPipelineD3D12.h"

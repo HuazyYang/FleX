@@ -13,8 +13,9 @@ file(GLOB DemoAppD3D_SOURCES
     "../core/*.h" "../core/*.cpp"
 )
 
-nvflow_add_shader_object_headers(
+shadertool_add_shader_objects(
     TARGET DemoAppD3DShaders
+    BACKENDS fxc
     SHADER_PROFILE 5_0
     CONFIG_FILE "d3d/shaders/Shaders.cfg"
     OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/d3d/shaders"
@@ -31,7 +32,7 @@ set_target_properties(DemoAppD3D PROPERTIES
     PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
 )
 target_include_directories(DemoAppD3D PRIVATE
-    "$<BUILD_INTERFACE:${DemoAppD3D_SHADER_HEADER_OUTPUT_DIR}/../>"
+    "$<BUILD_INTERFACE:${DemoAppD3D_SHADER_HEADER_OUTPUT_DIR}/../../>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/d3d12>"

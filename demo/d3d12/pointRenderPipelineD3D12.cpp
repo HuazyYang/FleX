@@ -12,10 +12,10 @@
 #include "pointRenderPipelineD3D12.h"
 
 // Shaders
-#include "../d3d/shaders/pointVS.hlsl.h"
-#include "../d3d/shaders/pointGS.hlsl.h"
-#include "../d3d/shaders/pointPS.hlsl.h"
-#include "../d3d/shaders/pointShadowPS.hlsl.h"
+#include "../d3d/shaders/fxc/pointVS.hlsl.h"
+#include "../d3d/shaders/fxc/pointGS.hlsl.h"
+#include "../d3d/shaders/fxc/pointPS.hlsl.h"
+#include "../d3d/shaders/fxc/pointShadowPS.hlsl.h"
 
 namespace FlexSample {
 

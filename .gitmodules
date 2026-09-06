@@ -1,0 +1,3 @@
+[submodule "thirdparty/ShaderTool"]
+	path = thirdparty/ShaderTool
+	url = git@github.com:HuazyYang/ShaderTool.git

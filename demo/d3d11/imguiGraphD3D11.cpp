@@ -13,8 +13,8 @@
 //direct3d headers
 #include <d3d11.h>
 
-#include "../d3d/shaders/imguiVS.hlsl.h"
-#include "../d3d/shaders/imguiPS.hlsl.h"
+#include "../d3d/shaders/fxc/imguiVS.hlsl.h"
+#include "../d3d/shaders/fxc/imguiPS.hlsl.h"
 
 namespace
 {

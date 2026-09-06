@@ -3,8 +3,9 @@ demo_apply_msvc_debug_optimizations()
 set(NvFlexExt_OUTNAME
     "NvFlexExt$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:Debug>$<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:Release>D3D_win64")
 
-nvflow_add_shader_object_headers(
+shadertool_add_shader_objects(
     TARGET NvFlexExtShaders
+    BACKENDS fxc
     SHADER_PROFILE 5_0
     CONFIG_FILE "dx/shaders/Shaders.cfg"
     OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/shaders"
@@ -43,7 +44,7 @@ target_compile_definitions(NvFlexExt PRIVATE
     "_ITERATOR_DEBUG_LEVEL=0"
 )
 target_include_directories(NvFlexExt PRIVATE
-    "$<BUILD_INTERFACE:${NvFlexExt_SHADER_HEADER_OUTPUT_DIR}/..>"
+    "$<BUILD_INTERFACE:${NvFlexExt_SHADER_HEADER_OUTPUT_DIR}>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>"
 )

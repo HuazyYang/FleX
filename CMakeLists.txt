@@ -49,8 +49,15 @@ if(MSVC)
 endif()
 
 include(cmake/CMakeRC.cmake)
-include(cmake/ShaderTools.cmake)
 include(cmake/CopyAsset.cmake)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/thirdparty/ShaderTool/cmake")
+set(ShaderTool_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ShaderTool")
+if(WINDOWS_WINE_CROSS)
+    set(ShaderTool_CROSSCOMPILING_EMULATOR wine)
+    set(ShaderTool_WINDOWS_WINE_CROSS ON)
+endif()
+find_package(ShaderTool REQUIRED)
 
 # NvFlexLib
 add_library(NvFlexLib SHARED IMPORTED)

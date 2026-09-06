@@ -33,7 +33,7 @@
 #include "flexExt_dx_common.h"
 
 using BYTE = unsigned char;
-#include "shaders/flexExt.UpdateForceFields.hlsl.h"
+#include "flexExt.UpdateForceFields.hlsl.h"
 
 struct NvFlexExtForceFieldCallback {};
 

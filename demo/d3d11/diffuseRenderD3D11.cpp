@@ -23,9 +23,9 @@
 
 #include "diffuseRenderD3D11.h"
 
-#include "../d3d/shaders/diffuseVS.hlsl.h"
-#include "../d3d/shaders/diffuseGS.hlsl.h"
-#include "../d3d/shaders/diffusePS.hlsl.h"
+#include "../d3d/shaders/fxc/diffuseVS.hlsl.h"
+#include "../d3d/shaders/fxc/diffuseGS.hlsl.h"
+#include "../d3d/shaders/fxc/diffusePS.hlsl.h"
 
 #include "../d3d/shaderCommonD3D.h"
 

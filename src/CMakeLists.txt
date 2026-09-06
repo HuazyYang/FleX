@@ -7,12 +7,13 @@ endif()
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
-nvflow_add_shader_object_headers(
+shadertool_add_shader_objects(
     TARGET NvFlexShaders
     SHADER_PROFILE 5_0
     CONFIG_FILE "shaders/Shaders.cfg"
-    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/__shader_objs"
+    BACKENDS fxc
     OUTPUT_NAME_USE_ENTRY
+    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/__shader_objs"
     INCLUDE_DIRECTORIES
     "../external/nvapi/include"
     "../external/ags_lib/hlsl"

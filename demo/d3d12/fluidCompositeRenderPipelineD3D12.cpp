@@ -10,8 +10,8 @@
 #include "../d3d/shaderCommonD3D.h"
 
 // Shaders
-#include "../d3d/shaders/passThroughVS.hlsl.h"
-#include "../d3d/shaders/compositePS.hlsl.h"
+#include "../d3d/shaders/fxc/passThroughVS.hlsl.h"
+#include "../d3d/shaders/fxc/compositePS.hlsl.h"
 
 // this
 #include "fluidCompositeRenderPipelineD3D12.h"

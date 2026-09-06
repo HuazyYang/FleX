@@ -13,8 +13,8 @@
 #include "fluidSmoothRenderPipelineD3D12.h"
 
 // Shaders
-#include "../d3d/shaders/passThroughVS.hlsl.h"
-#include "../d3d/shaders/blurDepthPS.hlsl.h"
+#include "../d3d/shaders/fxc/passThroughVS.hlsl.h"
+#include "../d3d/shaders/fxc/blurDepthPS.hlsl.h"
 
 namespace FlexSample {
 

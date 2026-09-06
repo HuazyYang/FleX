@@ -10,9 +10,9 @@
 #include "meshRendererD3D12.h"
 #include "../d3d/shaderCommonD3D.h"
 
-#include "../d3d/shaders/ellipsoidDepthVS.hlsl.h"
-#include "../d3d/shaders/ellipsoidDepthGS.hlsl.h"
-#include "../d3d/shaders/ellipsoidDepthPS.hlsl.h"
+#include "../d3d/shaders/fxc/ellipsoidDepthVS.hlsl.h"
+#include "../d3d/shaders/fxc/ellipsoidDepthGS.hlsl.h"
+#include "../d3d/shaders/fxc/ellipsoidDepthPS.hlsl.h"
 
 // this
 #include "fluidEllipsoidRenderPipelineD3D12.h"

@@ -23,15 +23,15 @@
 
 #include "fluidRenderD3D11.h"
 
-#include "../d3d/shaders/pointThicknessVS.hlsl.h"
-#include "../d3d/shaders/pointThicknessGS.hlsl.h"
-#include "../d3d/shaders/pointThicknessPS.hlsl.h"
-#include "../d3d/shaders/ellipsoidDepthVS.hlsl.h"
-#include "../d3d/shaders/ellipsoidDepthGS.hlsl.h"
-#include "../d3d/shaders/ellipsoidDepthPS.hlsl.h"
-#include "../d3d/shaders/passThroughVS.hlsl.h"
-#include "../d3d/shaders/blurDepthPS.hlsl.h"
-#include "../d3d/shaders/compositePS.hlsl.h"
+#include "../d3d/shaders/fxc/pointThicknessVS.hlsl.h"
+#include "../d3d/shaders/fxc/pointThicknessGS.hlsl.h"
+#include "../d3d/shaders/fxc/pointThicknessPS.hlsl.h"
+#include "../d3d/shaders/fxc/ellipsoidDepthVS.hlsl.h"
+#include "../d3d/shaders/fxc/ellipsoidDepthGS.hlsl.h"
+#include "../d3d/shaders/fxc/ellipsoidDepthPS.hlsl.h"
+#include "../d3d/shaders/fxc/passThroughVS.hlsl.h"
+#include "../d3d/shaders/fxc/blurDepthPS.hlsl.h"
+#include "../d3d/shaders/fxc/compositePS.hlsl.h"
 
 #include "../d3d/shaderCommonD3D.h"
 
