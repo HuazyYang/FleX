@@ -32,7 +32,11 @@ And either:
 * DirectX 11/12 SDK
 
 For the supported Linux-to-Win64 DX11/DX12 cross-build and Wine launch
-procedure, see [scripts/wine/README.md](scripts/wine/README.md).
+procedure, provision LLVM 19, Ninja, Wine, MSVC and Windows SDK in a win64 prefix.
+Export `WINEPREFIX=$HOME/.wineprefixes/dev-x64`, then run
+`cmake --preset wine-clang` and `cmake --build --preset wine-clang-debug`.
+ShaderTool discovers FXC from the Windows SDK. VS Code's Wine launch entries
+connect cpptools/GDB to WineDbg directly; no shell wrappers are required.
 
 Demo 
 ====
@@ -105,4 +109,3 @@ Acknowledgements
 * Regal is licensed under the BSD license
 * stb_truetype by Sean Barrett is public domain
 * imgui by Mikko Mononen is licensed under the ZLib license
-

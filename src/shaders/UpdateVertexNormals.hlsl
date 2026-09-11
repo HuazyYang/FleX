@@ -17,9 +17,9 @@ void UpdateVertexNormals(int globalIdx: SV_DispatchThreadID) {
 
     if(globalIdx < gParams.kNumTriangles) {
 
-        int idx1 = indices[3 * globalIdx];
-        int idx2 = indices[3 * globalIdx + 1];
-        int idx3 = indices[3 * globalIdx + 2];
+        int idx1 = indices[globalIdx * 3];
+        int idx2 = indices[globalIdx * 3 + 1];
+        int idx3 = indices[globalIdx * 3 + 2];
 
         float3 n = triNormals[globalIdx];
 

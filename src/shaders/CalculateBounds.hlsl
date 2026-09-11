@@ -143,7 +143,9 @@ void CalculateBounds(int threadIdx: SV_GroupThreadID, int blockIdx: SV_GroupID, 
 #define WAVEFRONT_SIZE      32
 #define WAVEFRONT_SIZE_BITS 5
 
-groupshared float3 blockData[BLOCK_DIM_X / WAVEFRONT_SIZE];
+// The shipped AMD variants allocate a full per-thread array (dcl_tgsm_structured
+// g0, 12, 128) even though only BLOCK_DIM_X / WAVEFRONT_SIZE entries are used.
+groupshared float3 blockData[BLOCK_DIM_X];
 
 #if WAVEFRONT_SIZE != 32
 #error AMD wavefront size must be 32 by configuration

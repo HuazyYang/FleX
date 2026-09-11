@@ -1,5 +1,5 @@
 cbuffer consts : register(b0) {
-    uint gNumBounds;
+    int gNumBounds;
 }
 
 struct FlexConvexMeshDevice {
@@ -38,55 +38,63 @@ RWStructuredBuffer<float4> lowers : register(u0);
 RWStructuredBuffer<float4> uppers : register(u1);
 
 float3 RotateVector(float4 q, float3 v) {
-    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+    return v * (2.0 * q.w * q.w - 1.0) + cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
 }
 
 void LocalShapeBounds(uint shapeType, float4 geom, out float3 lower, out float3 upper) {
-    lower = 0.0;
-    upper = 0.0;
-
-    if (shapeType == eNvFlexShapeSphere) {
+    switch (shapeType) {
+    case eNvFlexShapeSphere:
         lower = -geom.xxx;
         upper = geom.xxx;
-    } else if (shapeType == eNvFlexShapeCapsule) {
+        break;
+    case eNvFlexShapeCapsule:
         lower = -geom.xxx - float3(geom.y, 0.0, 0.0);
         upper = geom.xxx + float3(geom.y, 0.0, 0.0);
-    } else if (shapeType == eNvFlexShapeBox) {
+        break;
+    case eNvFlexShapeBox:
         lower = -geom.xyz;
         upper = geom.xyz;
-    } else if (shapeType == eNvFlexShapeConvexMesh) {
-        uint meshIndex = uint(geom.w) - 1;
-        lower = convexMeshes[meshIndex].mLower.xyz * geom.xyz;
-        upper = convexMeshes[meshIndex].mUpper.xyz * geom.xyz;
-    } else if (shapeType == eNvFlexShapeTriangleMesh) {
-        uint meshIndex = uint(geom.w) - 1;
-        lower = triangleMeshes[meshIndex].mLower.xyz * geom.xyz;
-        upper = triangleMeshes[meshIndex].mUpper.xyz * geom.xyz;
-    } else if (shapeType == eNvFlexShapeSDF) {
+        break;
+    case eNvFlexShapeConvexMesh: {
+        int meshIndex = asint(geom.w) - 1;
+        lower = geom.xyz * convexMeshes[meshIndex].mLower.xyz;
+        upper = geom.xyz * convexMeshes[meshIndex].mUpper.xyz;
+        break;
+    }
+    case eNvFlexShapeTriangleMesh: {
+        int meshIndex = asint(geom.w) - 1;
+        lower = geom.xyz * triangleMeshes[meshIndex].mLower.xyz;
+        upper = geom.xyz * triangleMeshes[meshIndex].mUpper.xyz;
+        break;
+    }
+    case eNvFlexShapeSDF:
         lower = 0.0;
         upper = geom.xxx;
+        break;
+    default:
+        break;
     }
 }
 
 void TransformBounds(float3 position, float4 rotation, float3 lower, float3 upper, out float3 outLower, out float3 outUpper) {
-    float3 center = 0.5 * (lower + upper);
-    float3 extents = upper - center;
+    float3 axisX = RotateVector(rotation, float3(1.0, 0.0, 0.0));
+    float3 axisY = RotateVector(rotation, float3(0.0, 1.0, 0.0));
+    float3 axisZ = RotateVector(rotation, float3(0.0, 0.0, 1.0));
 
-    float3 axisX = RotateVector(rotation, float3(extents.x, 0.0, 0.0));
-    float3 axisY = RotateVector(rotation, float3(0.0, extents.y, 0.0));
-    float3 axisZ = RotateVector(rotation, float3(0.0, 0.0, extents.z));
-    float3 worldExtents = abs(axisX) + abs(axisY) + abs(axisZ);
-    float3 worldCenter = position + RotateVector(rotation, center);
+    float3 edges = upper - lower;
+    float3 worldExtents = abs(axisX * edges.x) + abs(axisY * edges.y);
+    worldExtents = abs(axisZ * edges.z) + worldExtents.xyz;
 
-    outLower = worldCenter - worldExtents;
-    outUpper = worldCenter + worldExtents;
+    float3 center = (lower + upper) * 0.5;
+    float3 worldCenter = RotateVector(rotation, center) + position;
+
+    outLower = worldCenter - worldExtents * 0.5;
+    outUpper = worldCenter + worldExtents * 0.5;
 }
 
 [numthreads(256, 1, 1)]
 void TransformShapeBounds(uint idx : SV_DispatchThreadID) {
-    if (idx >= gNumBounds)
-        return;
-
+    if (int(idx) < gNumBounds) {
     uint shapeType = flags[idx] & 7;
     float3 localLower;
     float3 localUpper;
@@ -100,5 +108,6 @@ void TransformShapeBounds(uint idx : SV_DispatchThreadID) {
     TransformBounds(positionsPrev[idx].xyz, rotationsPrev[idx], localLower, localUpper, lowerPrev, upperPrev);
 
     lowers[idx] = float4(min(lowerNow, lowerPrev), 0.0);
-    uppers[idx] = float4(max(upperNow, upperPrev), 0.0);
+    uppers[idx] = float4(max(upperPrev, upperNow), 0.0);
+    }
 }

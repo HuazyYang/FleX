@@ -20,7 +20,7 @@ void CalculateParticleHash(int globalIdx: SV_DispatchThreadID) {
         float3 boundLower = gBounds[0];
         pos -= boundLower;
         int3 bucket = int3(pos * gParams.kInvCellEdge);
-        hash = (bucket.x & 127) | (((bucket.y & 127) << 7) | ((bucket.z & 127) << 14));
+        hash = (bucket.x & 127) | (((bucket.z & 127) << 14) | ((bucket.y & 127) << 7));
     }
 
     cellIndices[globalIdx] = index.xxxx;

@@ -15,7 +15,8 @@ void CalculateVorticity(int globalIdx: SV_DispatchThreadID) {
     if (globalIdx < gParams.kNumParticles) {
 
         uint phase = (uint)sortedPhases[globalIdx];
-        if ((phase & 0x400000u) == 0) {
+        bool isFluid = (phase & 0x400000u) != 0;
+        if (!isFluid) {
             curl[globalIdx] = 0.0.xxxx;
             return;
         }
@@ -30,18 +31,19 @@ void CalculateVorticity(int globalIdx: SV_DispatchThreadID) {
             int contact = contacts[contactIdx];
             contactIdx += gParams.kNumParticlesAligned;
             int contactPhase = sortedPhases[contact];
+            bool contactFluid = (contactPhase & 0x400000) != 0;
 
-            if ((contactPhase & 0x400000) == 0)
+            if (!contactFluid)
                 continue;
 
             float3 p1 = sortedNewPositions[contact].xyz;
             float3 d01 = p0 - p1;
             float lenSqr = dot(d01, d01);
-            bool insideKernel = 0 < lenSqr && lenSqr <= gParams.kRadiusSq;
+            bool insideKernel = lenSqr <= gParams.kRadiusSq && 0 < lenSqr;
             float3 v1 = sortedNewVelocities[contact].xyz;
             float3 v10 = v1 - v0;
             float len = sqrt(lenSqr);
-            float3 q10 = (1.0 - len * gParams.kInvRadius) * (-gParams.kSpiky2) / len * d01;
+            float3 q10 = d01 * ((1.0 - len * gParams.kInvRadius) * -gParams.kSpiky2) / len;
             float3 rot = v10.yzx * q10.zxy - q10.yzx * v10.zxy;
 
             rotSum = insideKernel ? rotSum + rot : rotSum;

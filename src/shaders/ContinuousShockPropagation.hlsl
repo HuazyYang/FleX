@@ -10,11 +10,14 @@ groupshared float3 g1;
 void ContinuousShockPropagation(int idx: SV_GroupThreadID, int globalIdx: SV_DispatchThreadID) {
     if (idx == 0) {
         float3 b0 = bounds[0];
-        float3 b1 = bounds[1];
-        float d0 = dot(b0, gParams.kGravity);
-        float d1 = dot(b1, gParams.kGravity);
+        g0 = b0;
 
-        g0 = d0 < d1 ? b1 : b0;
+        float d0 = dot(gParams.kGravity, b0);
+        float3 b1 = bounds[1];
+        float d1 = dot(gParams.kGravity, b1);
+
+        if (d0 < d1)
+            g0 = b1;
 
         float gLen2 = dot(gParams.kGravity, gParams.kGravity);
         g1 = gLen2 > 0.0 ? gParams.kGravity * rsqrt(gLen2) : 0.0.xxx;

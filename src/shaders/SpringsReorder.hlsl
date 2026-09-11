@@ -12,14 +12,13 @@ RWStructuredBuffer<float> halfStiffness : register(u2);
 
 [numthreads(256, 1, 1)]
 void SpringsReorder(uint idx : SV_DispatchThreadID) {
-    if (idx >= (gNumSprings << 1))
-        return;
+    if (idx < (gNumSprings << 1)) {
+        uint sortedIndex = sortedIndices[idx];
+        uint springIndex = sortedIndex >> 1;
+        uint oppositeIndex = (sortedIndex & 1) ? sortedIndex - 1 : sortedIndex + 1;
 
-    uint sortedIndex = sortedIndices[idx];
-    uint springIndex = sortedIndex >> 1;
-    uint oppositeIndex = (sortedIndex & 1) ? sortedIndex - 1 : sortedIndex + 1;
-
-    halfOpposite[idx] = indices[oppositeIndex];
-    halfLengths[idx] = lengths[springIndex];
-    halfStiffness[idx] = stiffness[springIndex];
+        halfOpposite[idx] = indices[oppositeIndex];
+        halfLengths[idx] = lengths[springIndex];
+        halfStiffness[idx] = stiffness[springIndex];
+    }
 }

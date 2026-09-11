@@ -11,37 +11,35 @@ RWStructuredBuffer<float4> q3 : register(u2);
 
 void JacobiRotate(inout float3x3 a, inout float3x3 v, int p, int q) {
     float apq = a[p][q];
-    if (apq == 0.0)
-        return;
+    if (apq != 0.0) {
+        float theta = (a[p][p] - a[q][q]) * rcp(apq + apq);
+        float t = sign(theta) * rcp(sqrt(theta * theta + 1.0) + abs(theta));
+        float c = rsqrt(t * t + 1.0);
+        float s = t * c;
 
-    float tau = (a[q][q] - a[p][p]) / (2.0 * apq);
-    float tauSign = (tau < 0.0) ? -1.0 : 1.0;
-    float t = tauSign / (abs(tau) + sqrt(1.0 + tau * tau));
-    float c = rsqrt(1.0 + t * t);
-    float s = t * c;
+        float app = a[p][p];
+        float aqq = a[q][q];
+        a[p][p] = app + t * apq;
+        a[q][q] = -t * apq + aqq;
+        a[p][q] = 0.0;
+        a[q][p] = 0.0;
 
-    float app = a[p][p];
-    float aqq = a[q][q];
-    a[p][p] = app - t * apq;
-    a[q][q] = aqq + t * apq;
-    a[p][q] = 0.0;
-    a[q][p] = 0.0;
-
-    [unroll]
-    for (int k = 0; k < 3; ++k) {
-        if (k != p && k != q) {
-            float akp = a[k][p];
-            float akq = a[k][q];
-            a[k][p] = c * akp - s * akq;
-            a[p][k] = a[k][p];
-            a[k][q] = s * akp + c * akq;
-            a[q][k] = a[k][q];
+        [unroll]
+        for (int k = 0; k < 3; ++k) {
+            if (k != p && k != q) {
+                float akp = a[k][p];
+                float akq = a[k][q];
+                a[k][p] = c * akp + s * akq;
+                a[p][k] = a[k][p];
+                a[k][q] = -s * akp + c * akq;
+                a[q][k] = a[k][q];
+            }
         }
 
-        float vkp = v[k][p];
-        float vkq = v[k][q];
-        v[k][p] = c * vkp - s * vkq;
-        v[k][q] = s * vkp + c * vkq;
+        float3 vp = v[p];
+        float3 vq = v[q];
+        v[p] = c * vp + s * vq;
+        v[q] = -s * vp + c * vq;
     }
 }
 
@@ -50,14 +48,24 @@ void EigenSymmetric3x3(inout float3x3 a, out float3x3 v) {
                  0.0, 1.0, 0.0,
                  0.0, 0.0, 1.0);
 
-    [unroll]
+    [loop]
     for (int sweep = 0; sweep < 4; ++sweep) {
-        float a01 = abs(a[0][1]);
-        float a02 = abs(a[0][2]);
-        float a12 = abs(a[1][2]);
-        if (a01 >= a02 && a01 >= a12)
+        int axis = 0;
+        float largest = abs(a[0][1]);
+        if (largest < abs(a[0][2])) {
+            axis = 1;
+            largest = abs(a[0][2]);
+        }
+        if (largest < abs(a[1][2])) {
+            axis = 2;
+            largest = abs(a[1][2]);
+        }
+        if (largest < 1.0e-9)
+            break;
+
+        if (axis == 0)
             JacobiRotate(a, v, 0, 1);
-        else if (a02 >= a12)
+        else if (axis == 1)
             JacobiRotate(a, v, 0, 2);
         else
             JacobiRotate(a, v, 1, 2);
@@ -65,90 +73,79 @@ void EigenSymmetric3x3(inout float3x3 a, out float3x3 v) {
 }
 
 float AnisotropyScale(float eigenValue) {
-    return clamp(sqrt(max(eigenValue, 0.0)) * gParams.kAnisotropy,
+    return clamp(sqrt(eigenValue) * gParams.kAnisotropy,
                  gParams.kAnisotropyMin,
                  gParams.kAnisotropyMax);
 }
 
 [numthreads(256, 1, 1)]
 void CalculateAnisotropy(uint idx : SV_DispatchThreadID) {
-    if (idx >= uint(gParams.kNumParticles))
-        return;
+    if (int(idx) < gParams.kNumParticles) {
+        float3 position = sortedPositionsTex[idx].xyz;
+        int contactCount = contactCounts[idx];
+        uint contactIndex = idx;
+        float4 weighted = 0.0;
 
-    float3 position = sortedPositionsTex[idx].xyz;
-    int contactCount = contactCounts[idx];
-    uint contactIndex = idx;
-    float3 mean = 0.0;
-    float weightSum = 0.0;
+        [loop]
+        for (int i = 0; i < contactCount; ++i) {
+            uint neighbor = contacts[contactIndex];
+            contactIndex += uint(gParams.kNumParticlesAligned);
 
-    [loop]
-    for (int i = 0; i < contactCount; ++i) {
-        uint neighbor = contacts[contactIndex];
-        contactIndex += uint(gParams.kNumParticlesAligned);
-
-        if (phases[neighbor] & eNvFlexPhaseFluid) {
-            float3 neighborPos = sortedPositionsTex[neighbor].xyz;
-            float3 delta = position - neighborPos;
-            float distSq = dot(delta, delta);
-            if (distSq > 0.0 && distSq < gParams.kRadiusSq) {
-                float q = sqrt(distSq) * gParams.kInvRadius;
-                float weight = 1.0 - q * q * q;
-                mean += neighborPos * weight;
-                weightSum += weight;
+            if (phases[neighbor] & eNvFlexPhaseFluid) {
+                float3 neighborPos = sortedPositionsTex[neighbor].xyz;
+                float3 delta = position - neighborPos;
+                float distSq = dot(delta, delta);
+                if (distSq < gParams.kRadiusSq && distSq > 0.0) {
+                    float q = sqrt(distSq) * gParams.kInvRadius;
+                    float weight = 1.0 - q * q * q;
+                    weighted += float4(neighborPos * weight, weight);
+                }
             }
         }
-    }
 
-    uint originalIndex = indices[idx];
-    if (weightSum == 0.0 || contactCount < 0) {
-        q1[originalIndex] = float4(1.0, 0.0, 0.0, gParams.kAnisotropyMin);
-        q2[originalIndex] = float4(0.0, 1.0, 0.0, gParams.kAnisotropyMin);
-        q3[originalIndex] = float4(0.0, 0.0, 1.0, gParams.kAnisotropyMin);
-        return;
-    }
+        uint originalIndex = indices[idx];
+        if (contactCount < 0 || weighted.w == 0.0) {
+            q1[originalIndex] = float4(1.0, 0.0, 0.0, gParams.kAnisotropyMin);
+            q2[originalIndex] = float4(0.0, 1.0, 0.0, gParams.kAnisotropyMin);
+            q3[originalIndex] = float4(0.0, 0.0, 1.0, gParams.kAnisotropyMin);
+            return;
+        }
 
-    mean /= weightSum;
-    float3x3 covariance = float3x3(0.0, 0.0, 0.0,
-                                  0.0, 0.0, 0.0,
-                                  0.0, 0.0, 0.0);
+        float invWeightSum = 1.0 / weighted.w;
+        float3x3 covariance = float3x3(0.0, 0.0, 0.0,
+                                       0.0, 0.0, 0.0,
+                                       0.0, 0.0, 0.0);
 
-    contactIndex = idx;
-    [loop]
-    for (int j = 0; j < contactCount; ++j) {
-        uint neighbor = contacts[contactIndex];
-        contactIndex += uint(gParams.kNumParticlesAligned);
+        contactIndex = idx;
+        [loop]
+        for (int j = 0; j < contactCount; ++j) {
+            uint neighbor = contacts[contactIndex];
+            contactIndex += uint(gParams.kNumParticlesAligned);
 
-        if (phases[neighbor] & eNvFlexPhaseFluid) {
-            float3 delta = sortedPositionsTex[neighbor].xyz - mean;
-            float3 radial = position - sortedPositionsTex[neighbor].xyz;
-            float distSq = dot(radial, radial);
-            if (distSq > 0.0 && distSq < gParams.kRadiusSq) {
-                float q = sqrt(distSq) * gParams.kInvRadius;
-                float weight = 1.0 - q * q * q;
-                covariance[0][0] += weight * delta.x * delta.x;
-                covariance[0][1] += weight * delta.x * delta.y;
-                covariance[0][2] += weight * delta.x * delta.z;
-                covariance[1][1] += weight * delta.y * delta.y;
-                covariance[1][2] += weight * delta.y * delta.z;
-                covariance[2][2] += weight * delta.z * delta.z;
+            [branch] if (phases[neighbor] & eNvFlexPhaseFluid) {
+                float3 neighborPos = sortedPositionsTex[neighbor].xyz;
+                float3 radial = position - neighborPos;
+                float distSq = dot(radial, radial);
+                [branch] if (distSq < gParams.kRadiusSq && distSq > 0.0) {
+                    float q = sqrt(distSq) * gParams.kInvRadius;
+                    float weight = 1.0 - q * q * q;
+                    float3 delta = neighborPos - weighted.xyz * invWeightSum;
+                    covariance[0] += weight * (delta.x * delta);
+                    covariance[1] += weight * (delta.y * delta);
+                    covariance[2] += weight * (delta.z * delta);
+                }
             }
         }
+
+        covariance[0] = invWeightSum * covariance[0];
+        covariance[1] = invWeightSum * covariance[1];
+        covariance[2] = invWeightSum * covariance[2];
+
+        float3x3 eigenVectors;
+        EigenSymmetric3x3(covariance, eigenVectors);
+
+        q1[originalIndex] = float4(eigenVectors[0], AnisotropyScale(covariance[0][0]));
+        q2[originalIndex] = float4(eigenVectors[1], AnisotropyScale(covariance[1][1]));
+        q3[originalIndex] = float4(eigenVectors[2], AnisotropyScale(covariance[2][2]));
     }
-
-    covariance[0][0] /= weightSum;
-    covariance[0][1] /= weightSum;
-    covariance[0][2] /= weightSum;
-    covariance[1][0] = covariance[0][1];
-    covariance[1][1] /= weightSum;
-    covariance[1][2] /= weightSum;
-    covariance[2][0] = covariance[0][2];
-    covariance[2][1] = covariance[1][2];
-    covariance[2][2] /= weightSum;
-
-    float3x3 eigenVectors;
-    EigenSymmetric3x3(covariance, eigenVectors);
-
-    q1[originalIndex] = float4(normalize(float3(eigenVectors[0][0], eigenVectors[1][0], eigenVectors[2][0])), AnisotropyScale(covariance[0][0]));
-    q2[originalIndex] = float4(normalize(float3(eigenVectors[0][1], eigenVectors[1][1], eigenVectors[2][1])), AnisotropyScale(covariance[1][1]));
-    q3[originalIndex] = float4(normalize(float3(eigenVectors[0][2], eigenVectors[1][2], eigenVectors[2][2])), AnisotropyScale(covariance[2][2]));
 }

@@ -6,6 +6,6 @@ RWStructuredBuffer<float4> velocities : register(u0);
 
 [numthreads(256, 1, 1)]
 void UpdateVelocities(uint idx : SV_DispatchThreadID) {
-    if (idx < uint(gParams.kNumParticles))
+    if (int(idx) < gParams.kNumParticles)
         velocities[idx] = (newPositions[idx] - oldPositions[idx]) * gParams.kInvDt;
 }

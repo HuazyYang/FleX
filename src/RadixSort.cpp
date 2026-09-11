@@ -1,14 +1,11 @@
 #include "RadixSort.h"
 #include "Object.h"
 #include "ClientHelper.h"
-#include <cmrc/cmrc.hpp>
 
 #include "radixSortBlockCS.hlsl.h"
 #include "radixSort1CS.hlsl.h"
 #include "radixSort2CS.hlsl.h"
 #include "radixSort3CS.hlsl.h"
-
-CMRC_DECLARE(nvflex);
 
 namespace NvFlex {
 

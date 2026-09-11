@@ -49,8 +49,9 @@ void CollideParticles(int globalIdx: SV_DispatchThreadID) {
 
                         int phase = phases[cellId];
                         int group2 = (phase & eNvFlexPhaseGroupMask);
-                        if (!(group == group2) || selfCollision) {
-                            if (group == group2 && ignoreSelfCollision) {
+                        bool sameGroup = (group == group2);
+                        if (!sameGroup || selfCollision) {
+                            if (ignoreSelfCollision && sameGroup) {
                                 float3 p1 = restPositions[indices[cellId]].xyz;
                                 float3 v10 = p0 - p1;
                                 float norm = dot(v10, v10);

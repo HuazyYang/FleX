@@ -1,6 +1,11 @@
 #include "KernelParams.hlsli"
 #include "Utils.hlsli"
 
+#if USE_NV_SHADER_EXT
+#include <nvHLSLExtns.h>
+#define InterlockedAddFp32 NvInterlockedAddFp32
+#endif
+
 StructuredBuffer<FlexInflatable> inflatables : register(t0);
 StructuredBuffer<float4> positions : register(t1);
 StructuredBuffer<int> reverseLookup : register(t2);

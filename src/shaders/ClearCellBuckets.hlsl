@@ -15,7 +15,7 @@ void ClearCellBuckets(int globalIdx: SV_DispatchThreadID) {
         float3 pos = newPositions[idx].xyz;
         float3 boundLower = gBounds[0];
         int3 bucketIdx = int3((pos - boundLower) * gParams.kInvCellEdge);
-        int hash = (bucketIdx.x & 127) | (((bucketIdx.y & 127) << 7) | ((bucketIdx.z & 127) << 14));
+        int hash = (bucketIdx.x & 127) | (((bucketIdx.z & 127) << 14) | ((bucketIdx.y & 127) << 7));
         cellBucketStarts[hash] = 0;
         cellBucketEnds[hash] = 0;
     }

@@ -50,35 +50,34 @@ RWStructuredBuffer<float4> collisionPlanes : register(u1);
 RWStructuredBuffer<float4> collisionVelocities : register(u2);
 
 float3 Rotate(float4 q, float3 v) {
-    return v + 2.0f * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+    return v * (2.0f * q.w * q.w - 1.0f) + cross(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
 }
 
 float3 RotateInv(float4 q, float3 v) {
-    return v + 2.0f * cross(q.xyz, cross(q.xyz, v) - q.w * v);
+    return v * (2.0f * q.w * q.w - 1.0f) - cross(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
 }
 
 float4 NormalizeQuat(float4 q) {
-    return q * rsqrt(max(dot(q, q), 1.0e-20f));
+    return q * rsqrt(dot(q, q));
 }
 
 float3 SafeNormalize(float3 v) {
     float lenSq = dot(v, v);
-    return lenSq > 0.0f ? v * rsqrt(lenSq) : float3(0.0f, 1.0f, 0.0f);
+    return lenSq > 0.0f ? v * rsqrt(lenSq) : float3(0.0f, 0.0f, 0.0f);
 }
 
 bool OverlapAabb(float3 lowerA, float3 upperA, float3 lowerB, float3 upperB) {
-    return all(upperA >= lowerB) && all(upperB >= lowerA);
+    return !(any(upperA < lowerB) || any(upperB < lowerA));
 }
 
 bool IntersectSegmentAabb(float3 a, float3 b, float3 halfExtents) {
-    float3 d = b - a;
-    float3 invD = rcp(d);
-    float3 t0 = (-halfExtents - a) * invD;
-    float3 t1 = (halfExtents - a) * invD;
+    float3 invD = 1.0f / (b - a);
+    float3 t1 = invD * (halfExtents - a);
+    float3 t0 = invD * (-halfExtents - a);
     float3 tMin3 = min(t0, t1);
     float3 tMax3 = max(t0, t1);
-    float tMin = max(max(tMin3.x, tMin3.y), max(tMin3.z, 0.0f));
-    float tMax = min(min(tMax3.x, tMax3.y), min(tMax3.z, 1.0f));
+    float tMin = max(tMin3.z, max(tMin3.y, max(tMin3.x, 0.0f)));
+    float tMax = min(tMax3.z, min(tMax3.y, min(tMax3.x, 1.0f)));
     return tMin < tMax;
 }
 
@@ -135,27 +134,27 @@ void StoreContact(
     float3 localNormal,
     float localPlaneW) {
 
-    if (count >= gParams.kMaxContactsPerParticle)
-        return;
+    if (count < gParams.kMaxContactsPerParticle) {
+        float3 shapeStartPoint = Rotate(qStart, localParticleEnd) + xStart;
+        float3 velocity = particleEnd - shapeStartPoint;
+        int contactIndex = particle * gParams.kMaxContactsPerParticle + count;
 
-    float3 normal = SafeNormalize(Rotate(qEnd, localNormal));
-    float4 plane = float4(normal, localPlaneW - dot(normal, xEnd));
+        float3 normal = Rotate(qEnd, localNormal);
+        float4 plane = float4(normal, localPlaneW - dot(normal, xEnd));
 
-    if ((flags & eNvFlexShapeFlagTrigger) != 0)
-        plane = 0.0f.xxxx;
+        if (flags & eNvFlexShapeFlagTrigger)
+            plane = 0.0f.xxxx;
 
-    float3 shapeStartPoint = xStart + Rotate(qStart, localParticleEnd);
-    int contactIndex = particle * gParams.kMaxContactsPerParticle + count;
-
-    collisionPlanes[contactIndex] = plane;
-    collisionVelocities[contactIndex] = float4(particleEnd - shapeStartPoint, float(shape));
-    count++;
+        collisionPlanes[contactIndex] = plane;
+        collisionVelocities[contactIndex] = float4(velocity, float(shape));
+        count++;
+    }
 }
 
 bool SphereContact(float3 localEnd, float radius, out float3 normal, out float planeW) {
     float lenSq = dot(localEnd, localEnd);
     float len = sqrt(lenSq);
-    normal = lenSq > 0.0f ? localEnd * rsqrt(lenSq) : float3(0.0f, 1.0f, 0.0f);
+    normal = SafeNormalize(localEnd);
     planeW = -radius;
     return len - radius - gParams.kCollisionDistance < gParams.kCollisionThreshold;
 }
@@ -168,37 +167,54 @@ bool CapsuleContact(
     out float3 normal,
     out float planeW) {
 
-    float x = clamp(localEnd.x, -halfHeight, halfHeight);
-    float3 axisPoint = float3(x, 0.0f, 0.0f);
+    float axisX = (localEnd.x > halfHeight)
+                ? halfHeight
+                : ((localEnd.x < -halfHeight) ? -halfHeight : localEnd.x);
+    float3 axisPoint = float3(axisX, 0.0f, 0.0f);
     float3 delta = localEnd - axisPoint;
     float distSq = dot(delta, delta);
-    float dist = sqrt(distSq);
-    bool endContact = dist - radius - gParams.kCollisionDistance < gParams.kCollisionThreshold;
+    float radialDistance = sqrt(distSq) - radius - gParams.kCollisionDistance;
 
-    float3 seg = localEnd - localStart;
-    float3 capMin = float3(-halfHeight - radius - gParams.kCollisionDistance - gParams.kCollisionThreshold, 0.0f, 0.0f);
-    float3 capMax = float3(halfHeight + radius + gParams.kCollisionDistance + gParams.kCollisionThreshold, 0.0f, 0.0f);
-    float3 closest;
+    // Closest point between the particle sweep (localEnd -> localStart) and the
+    // capsule axis segment, expanded by the radius along x.
+    float axisLower = -radius - halfHeight;
+    float axisUpper = radius + halfHeight;
+    float3 seg = localStart - localEnd;
+    float extent = axisUpper - axisLower;
+    float3 offset = localEnd - float3(axisLower, 0.0f, 0.0f);
 
-    float axisLen = halfHeight * 2.0f;
-    if (dot(seg, seg) > 0.0f && axisLen > 0.0f) {
-        float s = saturate((localEnd.x - localStart.x) / max(seg.x, 1.0e-20f));
-        float cx = clamp(lerp(localStart.x, localEnd.x, s), capMin.x, capMax.x);
-        closest = float3(cx, 0.0f, 0.0f);
-    } else {
-        closest = axisPoint;
+    float segLengthSq = dot(seg, seg);
+    float segDotOffset = dot(seg, offset);
+    float axisLengthSq = extent * extent;
+    float axisDotOffset = extent * offset.x;
+    float axisDotSeg = extent * seg.x;
+
+    float denominator = segLengthSq * axisLengthSq - axisDotSeg * axisDotSeg;
+    float segParam = (denominator != 0.0f)
+                   ? saturate((axisDotSeg * axisDotOffset - segDotOffset * axisLengthSq) / denominator)
+                   : 0.0f;
+    float axisParam = (axisDotSeg * segParam + axisDotOffset) / axisLengthSq;
+
+    if (axisParam > 1.0f) {
+        segParam = saturate((axisDotSeg - segDotOffset) / segLengthSq);
+        axisParam = 1.0f;
+    }
+    if (axisParam < 0.0f) {
+        segParam = saturate(-segDotOffset / segLengthSq);
+        axisParam = 0.0f;
     }
 
-    if (!endContact) {
-        float3 d = localEnd - closest;
-        endContact = dot(d, d) <=
-            (radius + gParams.kCollisionDistance + gParams.kCollisionThreshold) *
-            (radius + gParams.kCollisionDistance + gParams.kCollisionThreshold);
-    }
+    float3 closestOnSeg = seg * segParam + localEnd;
+    float3 closestOnAxis = float3(extent * axisParam + axisLower, 0.0f, 0.0f);
+    float3 separation = closestOnSeg - closestOnAxis;
 
-    normal = distSq > 0.0f ? delta * rsqrt(distSq) : float3(0.0f, 1.0f, 0.0f);
-    planeW = -dot(normal, axisPoint) - radius;
-    return endContact;
+    float reach = gParams.kCollisionThreshold + gParams.kCollisionDistance + radius;
+    bool axisContact = reach * reach >= dot(separation, separation);
+
+    normal = SafeNormalize(delta);
+    float3 surfacePoint = normal * radius + axisPoint;
+    planeW = -dot(normal, surfacePoint);
+    return radialDistance < gParams.kCollisionThreshold || axisContact;
 }
 
 bool BoxContact(
@@ -208,46 +224,33 @@ bool BoxContact(
     out float3 normal,
     out float planeW) {
 
-    normal = float3(0.0f, 1.0f, 0.0f);
-    planeW = 0.0f;
+    // `normal` and `planeW` are deliberately left untouched on the miss path: the DXBC
+    // writes them only once a contact is found, and the caller keeps its own defaults.
+    float3 expanded = halfExtents + gParams.kCollisionDistance;
+    expanded = expanded + gParams.kCollisionThreshold;
 
-    float collisionOffset = gParams.kCollisionDistance + gParams.kCollisionThreshold;
-    float3 expanded = halfExtents + collisionOffset.xxx;
-
-    if (!IntersectSegmentAabb(localStart, localEnd, expanded))
+    if (!IntersectSegmentAabb(localEnd, localStart, expanded))
         return false;
 
-    float3 distToMax = expanded - localEnd;
-    float3 distToMin = expanded + localEnd;
-    float best = distToMin.x;
-    normal = float3(-1.0f, 0.0f, 0.0f);
-    planeW = -halfExtents.x;
+    float3 toMax = localEnd - expanded;
+    float3 toMin = localEnd + expanded;
 
-    if (distToMax.x < best) {
-        best = distToMax.x;
-        normal = float3(1.0f, 0.0f, 0.0f);
-        planeW = -halfExtents.x;
-    }
-    if (distToMin.y < best) {
-        best = distToMin.y;
-        normal = float3(0.0f, -1.0f, 0.0f);
-        planeW = -halfExtents.y;
-    }
-    if (distToMax.y < best) {
-        best = distToMax.y;
-        normal = float3(0.0f, 1.0f, 0.0f);
-        planeW = -halfExtents.y;
-    }
-    if (distToMin.z < best) {
-        best = distToMin.z;
-        normal = float3(0.0f, 0.0f, -1.0f);
-        planeW = -halfExtents.z;
-    }
-    if (distToMax.z < best) {
-        normal = float3(0.0f, 0.0f, 1.0f);
-        planeW = -halfExtents.z;
-    }
+    float best = 3.402823466e+38f;
+    float4 plane = float4(1.0f, 0.0f, 0.0f, -halfExtents.x);
 
+    best = min(abs(toMax.x), best);
+    if (abs(toMin.x) < best) { plane = float4(-1.0f,  0.0f,  0.0f, -halfExtents.x); }
+    best = min(best, abs(toMin.x));
+    if (abs(toMax.y) < best) { plane = float4( 0.0f,  1.0f,  0.0f, -halfExtents.y); }
+    best = min(abs(toMax.y), best);
+    if (abs(toMin.y) < best) { plane = float4( 0.0f, -1.0f,  0.0f, -halfExtents.y); }
+    best = min(abs(toMin.y), best);
+    if (abs(toMax.z) < best) { plane = float4( 0.0f,  0.0f,  1.0f, -halfExtents.z); }
+    best = min(abs(toMax.z), best);
+    if (abs(toMin.z) < best) { plane = float4( 0.0f,  0.0f, -1.0f, -halfExtents.z); }
+
+    normal = plane.xyz;
+    planeW = plane.w;
     return true;
 }
 
@@ -259,89 +262,93 @@ bool ConvexContact(
     out float3 normal,
     out float planeW) {
 
-    normal = float3(0.0f, 1.0f, 0.0f);
-    planeW = 0.0f;
-
     FlexConvexMeshDevice convex = convexes[meshId - 1];
     int planeBegin = convex.mPlaneOffset;
+    float3 segment = localStart - localEnd;
     int planeEnd = planeBegin + convex.mPlaneCount;
+    float3 invScale = 1.0f / scale;
+
+    normal = float3(0.0f, 0.0f, 0.0f);
+    planeW = 0.0f;
     float enter = 0.0f;
     float exit = 1.0f;
-    float maxDistance = -3.402823466e+38f;
-    float3 maxNormal = float3(0.0f, 1.0f, 0.0f);
-    float maxPlaneW = 0.0f;
+    float closest = 3.402823466e+38f;
 
     for (int i = planeBegin; i < planeEnd; ++i) {
         float4 p = convexPlanes[i];
-        float3 n = p.xyz / scale;
-        float invLen = rsqrt(max(dot(n, n), 1.0e-20f));
-        n *= invLen;
-        float w = p.w * invLen;
-        float d0 = dot(n, localStart) + w;
-        float d1 = dot(n, localEnd) + w;
+        float3 n = invScale * p.xyz;
+        float invLength = 1.0f / sqrt(dot(n, n));
+        n = n * invLength;
+        float w = invLength * p.w - gParams.kCollisionDistance - gParams.kCollisionThreshold;
 
-        if (d1 > maxDistance) {
-            maxDistance = d1;
-            maxNormal = n;
-            maxPlaneW = w;
+        float distance = dot(float4(n, w), float4(localEnd, 1.0f));
+        float denom = dot(n, segment);
+
+        if (denom != 0.0f) {
+            float t = -distance / denom;
+            if (denom < 0.0f) {
+                if (enter < t)
+                    enter = t;
+            } else {
+                if (t < exit)
+                    exit = t;
+            }
+            if (enter >= exit)
+                break;
+        } else if (distance > 0.0f) {
+            enter = exit + 1.0f;
+            break;
         }
 
-        float denom = d1 - d0;
-        if (denom != 0.0f) {
-            float t = -d0 / denom;
-            if (denom < 0.0f)
-                enter = max(enter, t);
-            else
-                exit = min(exit, t);
-        } else if (d0 > gParams.kCollisionDistance + gParams.kCollisionThreshold) {
-            enter = exit + 1.0f;
+        if (abs(distance) < closest) {
+            closest = abs(distance);
+            normal = n;
+            planeW = w;
         }
     }
 
-    normal = maxNormal;
-    planeW = maxPlaneW;
-    return enter < exit || maxDistance < gParams.kCollisionDistance + gParams.kCollisionThreshold;
+    return enter < exit;
 }
 
 bool SdfContact(float3 localEnd, float scale, int fieldId, out float3 normal, out float planeW) {
-    normal = float3(0.0f, 1.0f, 0.0f);
-    planeW = 0.0f;
-
+    // See BoxContact: the out parameters are only written on the hit path, as in the DXBC.
     int sdfIndex = fieldId - 1;
-    float invScale = rcp(scale);
+    float invScale = 1.0f / scale;
     float3 uvw = localEnd * invScale;
 
-    if (!all(uvw > 0.0f.xxx) || !all(uvw < 1.0f.xxx))
-        return false;
+    if (uvw.x > 0.0f && uvw.x < 1.0f && uvw.y > 0.0f && uvw.y < 1.0f && uvw.z > 0.0f && uvw.z < 1.0f) {
 
-    float dist = SampleSDF(sdfIndex, uvw);
-    if (dist >= (gParams.kCollisionDistance + gParams.kCollisionThreshold) * invScale)
-        return false;
+        float dist = SampleSDF(sdfIndex, uvw);
+        if (dist < (gParams.kCollisionDistance + gParams.kCollisionThreshold) * invScale) {
+            float3 h = 1.0f / float3(sdfs[sdfIndex].mDim.xyz);
+            float dx = SampleSDF(sdfIndex, uvw + float3(h.x, 0.0f, 0.0f)) -
+                SampleSDF(sdfIndex, uvw - float3(h.x, 0.0f, 0.0f));
+            float dy = SampleSDF(sdfIndex, uvw + float3(0.0f, h.y, 0.0f)) -
+                SampleSDF(sdfIndex, uvw - float3(0.0f, h.y, 0.0f));
+            float dz = SampleSDF(sdfIndex, uvw + float3(0.0f, 0.0f, h.z)) -
+                SampleSDF(sdfIndex, uvw - float3(0.0f, 0.0f, h.z));
 
-    float3 h = sdfs[sdfIndex].mInvDim.xyz;
-    float dx = SampleSDF(sdfIndex, uvw + float3(h.x, 0.0f, 0.0f)) -
-        SampleSDF(sdfIndex, uvw - float3(h.x, 0.0f, 0.0f));
-    float dy = SampleSDF(sdfIndex, uvw + float3(0.0f, h.y, 0.0f)) -
-        SampleSDF(sdfIndex, uvw - float3(0.0f, h.y, 0.0f));
-    float dz = SampleSDF(sdfIndex, uvw + float3(0.0f, 0.0f, h.z)) -
-        SampleSDF(sdfIndex, uvw - float3(0.0f, 0.0f, h.z));
+            float3 gradient = float3(dx, dy, dz);
+            float gradientSq = dot(gradient, gradient);
 
-    normal = SafeNormalize(float3(dx, dy, dz));
-    planeW = dist * scale - dot(normal, localEnd);
-    return dot(normal, normal) > 0.0f;
+            normal = gradient * rsqrt(gradientSq);
+            planeW = scale * dist - dot(normal, scale * uvw);
+            return gradientSq > 0.0f;
+        }
+    }
+
+    return false;
 }
 
 [numthreads(BLOCK_DIM_X, 1, 1)]
 void CollideShapes(int particle : SV_DispatchThreadID) {
-    if (particle >= gParams.kNumParticles)
-        return;
-
+    if (particle < gParams.kNumParticles) {
     float3 particleEnd = sortedNewPositions[particle].xyz;
     int count = collisionCounts[particle];
 
     for (int i = 0; i < gParams.kNumPlanes; ++i) {
         float4 plane = gParams.kPlanes[i];
-        float d = dot(plane.xyz, particleEnd) + plane.w - gParams.kCollisionDistance;
+        float d = dot(particleEnd, plane.xyz) + plane.w - gParams.kCollisionDistance;
 
         if (d <= gParams.kCollisionThreshold && count < gParams.kMaxContactsPerParticle) {
             int contactIndex = particle * gParams.kMaxContactsPerParticle + count;
@@ -360,73 +367,125 @@ void CollideShapes(int particle : SV_DispatchThreadID) {
         int stackSize = 1;
         stack[0] = uint(shapeBvhRootNode[0]);
 
-        while (stackSize > 0) {
-            uint node = stack[--stackSize];
+        while (stackSize != 0) {
+            uint node = stack[stackSize - 1];
             PackedNodeHalf lowerNode = shapeBvhNodeLowers[node];
             PackedNodeHalf upperNode = shapeBvhNodeUppers[node];
 
-            if (!OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v))
-                continue;
+            if (OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v)) {
+                uint lowerBits = lowerNode.ib & 0x7fffffffu;
+                uint leafBit = lowerNode.ib & 0x80000000u;
+                if (leafBit) {
+                    stackSize = stackSize - 1;
 
-            if ((lowerNode.ib & 0x80000000u) == 0) {
-                if (stackSize + 1 < BVH_STACK_SIZE) {
-                    stack[stackSize++] = lowerNode.ib & 0x7fffffffu;
-                    stack[stackSize++] = upperNode.ib & 0x7fffffffu;
+                    int shape = int(lowerBits);
+                    int flags = shapeFlags[shape];
+                    if (particleChannels & uint(flags)) {
+
+                    uint type = uint(flags) & 7u;
+                    float3 shapePrevPos = shapePrevPositions[shape].xyz;
+                    float4 shapePrevRot = shapePrevRotations[shape];
+                    float3 positionDelta = shapePositions[shape].xyz - shapePrevPos;
+                    float3 xStart = positionDelta * gSubParams.kSubstepStart + shapePrevPos;
+                    float4 rotationDelta = shapeRotations[shape] - shapePrevRot;
+                    float4 qStart = NormalizeQuat(rotationDelta * gSubParams.kSubstepStart + shapePrevRot);
+                    float3 xEnd = positionDelta * gSubParams.kSubstepEnd + shapePrevPos;
+                    float4 qEnd = NormalizeQuat(rotationDelta * gSubParams.kSubstepEnd + shapePrevRot);
+
+                    float3 localEnd = RotateInv(qEnd, particleEnd - xEnd);
+                    float3 localStart = RotateInv(qStart, particleStart - xStart);
+                    float4 geometry = shapeGeometry[shape];
+                    float3 localNormal = float3(0.0f, 1.0f, 0.0f);
+                    float localPlaneW = 0.0f;
+
+                    if (type == eNvFlexShapeBox) {
+                        if (BoxContact(localStart, localEnd, geometry.xyz, localNormal, localPlaneW))
+                            StoreContact(
+                            particle,
+                            count,
+                            shape,
+                            flags,
+                            qStart,
+                            qEnd,
+                            xStart,
+                            xEnd,
+                            particleEnd,
+                            localEnd,
+                            localNormal,
+                            localPlaneW);
+                    } else if (type == eNvFlexShapeConvexMesh) {
+                        if (ConvexContact(localStart, localEnd, geometry.xyz, asint(geometry.w), localNormal, localPlaneW))
+                            StoreContact(
+                            particle,
+                            count,
+                            shape,
+                            flags,
+                            qStart,
+                            qEnd,
+                            xStart,
+                            xEnd,
+                            particleEnd,
+                            localEnd,
+                            localNormal,
+                            localPlaneW);
+                    } else if (type == eNvFlexShapeSphere) {
+                        if (SphereContact(localEnd, geometry.x, localNormal, localPlaneW))
+                            StoreContact(
+                            particle,
+                            count,
+                            shape,
+                            flags,
+                            qStart,
+                            qEnd,
+                            xStart,
+                            xEnd,
+                            particleEnd,
+                            localEnd,
+                            localNormal,
+                            localPlaneW);
+                    } else if (type == eNvFlexShapeCapsule) {
+                        if (CapsuleContact(localStart, localEnd, geometry.x, geometry.y, localNormal, localPlaneW))
+                            StoreContact(
+                            particle,
+                            count,
+                            shape,
+                            flags,
+                            qStart,
+                            qEnd,
+                            xStart,
+                            xEnd,
+                            particleEnd,
+                            localEnd,
+                            localNormal,
+                            localPlaneW);
+                    } else if (type == eNvFlexShapeSDF) {
+                        if (SdfContact(localEnd, geometry.x, asint(geometry.y), localNormal, localPlaneW))
+                            StoreContact(
+                            particle,
+                            count,
+                            shape,
+                            flags,
+                            qStart,
+                            qEnd,
+                            xStart,
+                            xEnd,
+                            particleEnd,
+                            localEnd,
+                            localNormal,
+                            localPlaneW);
+                    }
+                    }
+                } else {
+                    stack[stackSize - 1] = lowerBits;
+                    stack[stackSize] = upperNode.ib & 0x7fffffffu;
+                    stackSize = stackSize + 1;
                 }
-                continue;
-            }
-
-            int shape = int(lowerNode.ib & 0x7fffffffu);
-            int flags = shapeFlags[shape];
-            if ((particleChannels & uint(flags)) == 0)
-                continue;
-
-            uint type = uint(flags) & 7u;
-            float4 shapePrevPos = shapePrevPositions[shape];
-            float4 shapePos = shapePositions[shape];
-            float4 qStart = NormalizeQuat(shapePrevRotations[shape]);
-            float4 qEnd = NormalizeQuat(shapeRotations[shape]);
-            float3 xStart = lerp(shapePrevPos.xyz, shapePos.xyz, gSubParams.kSubstepStart);
-            float3 xEnd = lerp(shapePrevPos.xyz, shapePos.xyz, gSubParams.kSubstepEnd);
-            qStart = NormalizeQuat(lerp(shapePrevRotations[shape], shapeRotations[shape], gSubParams.kSubstepStart));
-            qEnd = NormalizeQuat(lerp(shapePrevRotations[shape], shapeRotations[shape], gSubParams.kSubstepEnd));
-
-            float3 localEnd = RotateInv(qEnd, particleEnd - xEnd);
-            float3 localStart = RotateInv(qStart, particleStart - xStart);
-            float4 geometry = shapeGeometry[shape];
-            float3 localNormal = float3(0.0f, 1.0f, 0.0f);
-            float localPlaneW = 0.0f;
-            bool hit = false;
-
-            if (type == eNvFlexShapeSphere) {
-                hit = SphereContact(localEnd, geometry.x, localNormal, localPlaneW);
-            } else if (type == eNvFlexShapeCapsule) {
-                hit = CapsuleContact(localStart, localEnd, geometry.x, geometry.y, localNormal, localPlaneW);
-            } else if (type == eNvFlexShapeBox) {
-                hit = BoxContact(localStart, localEnd, geometry.xyz, localNormal, localPlaneW);
-            } else if (type == eNvFlexShapeConvexMesh) {
-                hit = ConvexContact(localStart, localEnd, geometry.xyz, int(geometry.w), localNormal, localPlaneW);
-            } else if (type == eNvFlexShapeSDF) {
-                hit = SdfContact(localEnd, geometry.x, int(geometry.y), localNormal, localPlaneW);
-            }
-
-            if (hit) {
-                StoreContact(
-                    particle,
-                    count,
-                    shape,
-                    flags,
-                    qStart,
-                    qEnd,
-                    xStart,
-                    xEnd,
-                    particleEnd,
-                    localEnd,
-                    localNormal,
-                    localPlaneW);
+            } else {
+                stackSize = stackSize - 1;
             }
         }
     }
 
     collisionCounts[particle] = count;
+    }
 }

@@ -11,9 +11,7 @@ RWStructuredBuffer<float4> sortedNormals : register(u2);
 
 [numthreads(256, 1, 1)]
 void CalculateDensitySurfaceTension(uint idx : SV_DispatchThreadID) {
-    if (idx >= uint(gParams.kNumParticles))
-        return;
-
+    if (int(idx) < gParams.kNumParticles) {
     float3 position = sortedNewPositions[idx].xyz;
     int contactCount = contactCounts[idx];
     uint contactIndex = idx;
@@ -27,12 +25,13 @@ void CalculateDensitySurfaceTension(uint idx : SV_DispatchThreadID) {
 
         float3 delta = position - sortedNewPositions[neighbor].xyz;
         float distSq = dot(delta, delta);
-        if (distSq > 0.0 && distSq < gParams.kRadiusSq) {
+        if (distSq < gParams.kRadiusSq && distSq > 0.0) {
             float dist = sqrt(distSq);
-            float q = 1.0 - dist * gParams.kInvRadius;
             float phaseWeight = (phases[neighbor] & eNvFlexPhaseFluid) ? 1.0 : gParams.kSolidPressure;
-            density += phaseWeight * q * q * gParams.kSpiky1;
-            normal += delta * (-gParams.kSpiky2 * q / dist);
+            float q = 1.0 - dist * gParams.kInvRadius;
+            density += phaseWeight * (q * q * gParams.kSpiky1);
+            float scale = q * -gParams.kSpiky2;
+            normal += (delta * scale) / dist;
         }
     }
 
@@ -42,5 +41,6 @@ void CalculateDensitySurfaceTension(uint idx : SV_DispatchThreadID) {
         float4 outNormal = float4(normal * gParams.kSurfaceTension, 0.0);
         normals[indices[idx]] = outNormal;
         sortedNormals[idx] = outNormal;
+    }
     }
 }

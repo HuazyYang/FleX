@@ -9,11 +9,148 @@ RWStructuredBuffer<float> lambdas: register(u0);
 #define BLOCK_DIM_X      512
 #define BLOCK_DIM_X_BITS 9u
 
+#if USE_NV_SHADER_EXT
+
+#include <nvHLSLExtns.h>
+#define WAVE_SIZE      32
+#define WAVE_SIZE_BITS 5
+
+#elif USE_AMD_SHADER_EXT
+
+#include <ags_shader_intrinsics_dx11.hlsl>
+#define WAVE_SIZE      32
+#define WAVE_SIZE_BITS 5
+
+static const int g_AmdDxExtSwizzleOperations[] = {
+    AmdDxExtShaderIntrinsicsSwizzle_SwapX1,
+    AmdDxExtShaderIntrinsicsSwizzle_SwapX2,
+    AmdDxExtShaderIntrinsicsSwizzle_SwapX4,
+    AmdDxExtShaderIntrinsicsSwizzle_SwapX8,
+    AmdDxExtShaderIntrinsicsSwizzle_SwapX16,
+};
+
+#endif
+
 groupshared FlexInflatable inflatableInBlock;
 groupshared float volumeOfInflatable;
 groupshared float3 centerOfInflatable;
+
+#if USE_NV_SHADER_EXT || USE_AMD_SHADER_EXT
+groupshared float volumesInBlock[BLOCK_DIM_X / WAVE_SIZE];
+groupshared float3 centersInBlock[BLOCK_DIM_X / WAVE_SIZE];
+#else
 groupshared float volumesInBlock[BLOCK_DIM_X];
 groupshared float3 centersInBlock[BLOCK_DIM_X];
+#endif
+
+// Sums `center` across the whole thread group. The vendor paths reduce within a
+// wave using shuffle/swizzle intrinsics and then combine the per-wave partials;
+// the generic path walks a shared-memory tree over the live lanes.
+float3 ReduceCenter(int threadIdx, int numTrisInBlock, float3 center) {
+#if USE_NV_SHADER_EXT || USE_AMD_SHADER_EXT
+    const int laneIdx = threadIdx & (WAVE_SIZE - 1);
+    const int waveIdx = threadIdx >> int(WAVE_SIZE_BITS);
+    float3 v1;
+    int i;
+
+#if USE_NV_SHADER_EXT
+    [unroll]
+    for (i = 1; i < WAVE_SIZE; i <<= 1) {
+        v1.x = asfloat(NvShflDown(asint(center.x), i));
+        v1.y = asfloat(NvShflDown(asint(center.y), i));
+        v1.z = asfloat(NvShflDown(asint(center.z), i));
+        center = center + v1;
+    }
+#else
+    [unroll]
+    for (i = WAVE_SIZE_BITS - 1; i >= 0; --i) {
+        v1.x = AmdDxExtShaderIntrinsics_SwizzleF(center.x, g_AmdDxExtSwizzleOperations[i]);
+        v1.y = AmdDxExtShaderIntrinsics_SwizzleF(center.y, g_AmdDxExtSwizzleOperations[i]);
+        v1.z = AmdDxExtShaderIntrinsics_SwizzleF(center.z, g_AmdDxExtSwizzleOperations[i]);
+        center = center + v1;
+    }
+#endif
+
+    if (laneIdx == 0)
+        centersInBlock[waveIdx] = center;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (threadIdx == 0) {
+        float3 total = centersInBlock[0];
+        [unroll]
+        for (i = 1; i < (BLOCK_DIM_X / WAVE_SIZE); ++i)
+            total = total + centersInBlock[i];
+        centersInBlock[0] = total;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    return centersInBlock[0];
+#else
+    centersInBlock[threadIdx] = center;
+
+    for (uint j = uint(numTrisInBlock) >> 1; j > 0; j >>= 1) {
+        GroupMemoryBarrierWithGroupSync();
+        if (uint(threadIdx) < j) {
+            float3 v1 = centersInBlock[threadIdx];
+            float3 v2 = centersInBlock[threadIdx + j];
+            centersInBlock[threadIdx] = v1 + v2;
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    return centersInBlock[0];
+#endif
+}
+
+// Same reduction for the scalar volume term.
+float ReduceVolume(int threadIdx, int numTrisInBlock, float vol) {
+#if USE_NV_SHADER_EXT || USE_AMD_SHADER_EXT
+    const int laneIdx = threadIdx & (WAVE_SIZE - 1);
+    const int waveIdx = threadIdx >> int(WAVE_SIZE_BITS);
+    float s1;
+    int i;
+
+#if USE_NV_SHADER_EXT
+    [unroll]
+    for (i = 1; i < WAVE_SIZE; i <<= 1) {
+        s1 = asfloat(NvShflDown(asint(vol), i));
+        vol = vol + s1;
+    }
+#else
+    [unroll]
+    for (i = WAVE_SIZE_BITS - 1; i >= 0; --i) {
+        s1 = AmdDxExtShaderIntrinsics_SwizzleF(vol, g_AmdDxExtSwizzleOperations[i]);
+        vol = vol + s1;
+    }
+#endif
+
+    if (laneIdx == 0)
+        volumesInBlock[waveIdx] = vol;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (threadIdx == 0) {
+        float total = volumesInBlock[0];
+        [unroll]
+        for (i = 1; i < (BLOCK_DIM_X / WAVE_SIZE); ++i)
+            total = total + volumesInBlock[i];
+        volumesInBlock[0] = total;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    return volumesInBlock[0];
+#else
+    volumesInBlock[threadIdx] = vol;
+
+    for (uint j = uint(numTrisInBlock) >> 1; j > 0; j >>= 1) {
+        GroupMemoryBarrierWithGroupSync();
+        if (uint(threadIdx) < j) {
+            float s1 = volumesInBlock[threadIdx];
+            float s2 = volumesInBlock[threadIdx + j];
+            volumesInBlock[threadIdx] = s1 + s2;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    return volumesInBlock[0];
+#endif
+}
 
 [numthreads(BLOCK_DIM_X, 1, 1)]
 void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV_GroupID) {
@@ -37,13 +174,13 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
 
         if (triIdx < inflatableInBlock.mNumTris) {
             int triIdxAbs = triIdx + idxBase;
-            int idx1 = indices[3 * triIdxAbs];
+            int idx1 = indices[triIdxAbs * 3];
             int posIdx1 = reverseLookup[idx1];
 
-            int idx2 = indices[3 * triIdxAbs + 1];
+            int idx2 = indices[triIdxAbs * 3 + 1];
             int posIdx2 = reverseLookup[idx2];
 
-            int idx3 = indices[3 * triIdxAbs + 2];
+            int idx3 = indices[triIdxAbs * 3 + 2];
             int posIdx3 = reverseLookup[idx3];
 
             float3 pos1 = positions[posIdx1].xyz;
@@ -54,19 +191,7 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
         } else
             center = 0.0.xxx;
 
-        centersInBlock[threadIdx] = center;
-
-        for (uint j = uint(numTrisInBlock) >> 1; j > 0; j >>= 1) {
-            GroupMemoryBarrierWithGroupSync();
-            if (uint(threadIdx) < j) {
-                float3 v1 = centersInBlock[threadIdx];
-                float3 v2 = centersInBlock[threadIdx + j];
-                centersInBlock[threadIdx] = v1 + v2;
-            }
-        }
-
-        GroupMemoryBarrierWithGroupSync();
-        center = centersInBlock[0];
+        center = ReduceCenter(threadIdx, numTrisInBlock, center);
 
         if (threadIdx == 0)
             centerOfInflatable += center;
@@ -84,13 +209,13 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
 
         if (triIdx < inflatableInBlock.mNumTris) {
             int triIdxAbs = triIdx + idxBase;
-            int idx1 = indices[3 * triIdxAbs];
+            int idx1 = indices[triIdxAbs * 3];
             int posIdx1 = reverseLookup[idx1];
 
-            int idx2 = indices[3 * triIdxAbs + 1];
+            int idx2 = indices[triIdxAbs * 3 + 1];
             int posIdx2 = reverseLookup[idx2];
 
-            int idx3 = indices[3 * triIdxAbs + 2];
+            int idx3 = indices[triIdxAbs * 3 + 2];
             int posIdx3 = reverseLookup[idx3];
 
             float3 pos1 = positions[posIdx1].xyz - centerOfInflatable;
@@ -105,18 +230,7 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
         } else
             vol = 0.0;
 
-        volumesInBlock[threadIdx] = vol;
-
-        for (uint j = uint(numTrisInBlock) >> 1; j > 0; j >>= 1) {
-            GroupMemoryBarrierWithGroupSync();
-            if (uint(threadIdx) < j) {
-                float s1 = volumesInBlock[threadIdx];
-                float s2 = volumesInBlock[threadIdx + j];
-                volumesInBlock[threadIdx] = s1 + s2;
-            }
-        }
-        GroupMemoryBarrierWithGroupSync();
-        vol = volumesInBlock[0];
+        vol = ReduceVolume(threadIdx, numTrisInBlock, vol);
 
         if (threadIdx == 0)
             volumeOfInflatable += vol;

@@ -28,7 +28,7 @@ void UpdateTriangles(int globalIdx: SV_DispatchThreadID) {
 
         float3 pos21 = pos2.xyz - pos1.xyz;
         float3 pos31 = pos3.xyz - pos1.xyz;
-        float3 n = float3(pos31.yzx * pos21.zxy - pos21.yzx * pos3.zxy);
+        float3 n = pos31.yzx * pos21.zxy - pos21.yzx * pos31.zxy;
         float A = dot(n, n);
         n = A > 0.0 ? n * rsqrt(A) : 0.0.xxx;
         triNormals[globalIdx] = n;
@@ -38,7 +38,7 @@ void UpdateTriangles(int globalIdx: SV_DispatchThreadID) {
             float3 v2 = sortedVelocities[idx2].xyz;
             float3 v3 = sortedVelocities[idx3].xyz;
 
-            float3 wind = gParams.kWind - (v1 + v2 + v3) / 3.0;
+            float3 wind = gParams.kWind - (v1 + v2 + v3) * 0.3333;
             float windMag = dot(wind, wind);
             float3 windDir = windMag > 0 ? wind * rsqrt(windMag) : 0.0.xxx;
             float4 n4 = float4(n, dot(n, windDir));
@@ -54,7 +54,7 @@ void UpdateTriangles(int globalIdx: SV_DispatchThreadID) {
             float3 windT = wind.yzx * n4.zxy - wind.zxy * n4.yzx;
             float3 windN = windT.yzx * wind.zxy - windT.zxy * wind.yzx;
             float windNMag = dot(windN, windN);
-            float3 liftDir = windNMag > 0.0 ? windN * rsqrt(windN) : 0.0.xxx;
+            float3 liftDir = windNMag > 0.0 ? windN * rsqrt(windNMag) : 0.0.xxx;
 
             float3 windForce = forceMag.x * wind + liftMag * liftDir;
 

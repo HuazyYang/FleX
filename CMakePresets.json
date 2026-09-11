@@ -33,7 +33,7 @@
         {
             "name": "wine-clang",
             "displayName": "Linux clang-cl / Windows x64",
-            "description": "Cross-build FleX Win64 DX11/DX12 binaries for Wine",
+            "description": "Native clang-cl/LLVM with Windows SDK and CMake's Wine emulator",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/${presetName}",
             "toolchainFile": "${sourceDir}/cmake/toolchains/windows-clang-cl.cmake",
@@ -41,6 +41,9 @@
                 "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": true,
                 "NVFLEX_USE_MICROSOFT_VLD": false
+            },
+            "environment": {
+                "WINEDEBUG": "fixme-all"
             }
         }
     ],

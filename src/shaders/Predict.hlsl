@@ -15,6 +15,7 @@ void Predict(int globalIdx: SV_DispatchThreadID) {
         int idx = activeIndices[globalIdx];
         float4 p0 = positions[idx];
         float3 v0 = velocities[idx];
+        bool alive = p0.w > 0.0;
 
         int phase = phases[idx];
         bool isFluid = (phase & 0x400000) != 0;
@@ -23,14 +24,14 @@ void Predict(int globalIdx: SV_DispatchThreadID) {
         float3 v2 = v0 + gParams.kGravity * gParams.kDt;
         float3 v3 = v0 + accel * gParams.kBuoyancy;
         float3 v1 = isFluid ? v3 : v2;
-        v1 = p0.w > 0.0 ? v1 : v0;
+        v1 = alive ? v1 : v0;
 
         float v1Norm = dot(v1, v1);
         v1 = (gParams.kMaxSpeed * gParams.kMaxSpeed) < v1Norm ? gParams.kMaxSpeed * rsqrt(v1Norm) * v1 : v1;
-        velocities[globalIdx] = v1;
+        velocities[idx] = v1;
 
         float3 dp = v1 * gParams.kDt;
         float4 p1 = p0 + float4(dp, 0.0);
-        newPositions[globalIdx] = p1;
+        newPositions[idx] = p1;
     }
 }

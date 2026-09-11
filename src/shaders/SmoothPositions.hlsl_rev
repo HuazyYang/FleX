@@ -10,43 +10,48 @@ RWStructuredBuffer<float4> smoothPositionsOriginal : register(u1);
 
 [numthreads(256, 1, 1)]
 void SmoothPositions(uint idx : SV_DispatchThreadID) {
-    if (idx >= uint(gParams.kNumParticles))
-        return;
+    if (int(idx) < gParams.kNumParticles) {
+        float4 original = sortedNewPositionsTex[idx];
+        uint originalIndex = indices[idx];
+        float4 result = original;
 
-    float4 original = sortedNewPositionsTex[idx];
-    uint originalIndex = indices[idx];
-    float3 smoothed = original.xyz;
+        if (phases[idx] & eNvFlexPhaseFluid) {
+            int contactCount = contactCounts[idx];
+            uint contactIndex = idx;
+            float weightSum = 0.0;
+            float3 positionSum = 0.0;
 
-    if (phases[idx] & eNvFlexPhaseFluid) {
-        int contactCount = contactCounts[idx];
-        uint contactIndex = idx;
-        float weightSum = 0.0;
-        float3 positionSum = 0.0;
+            [loop]
+            for (int i = 0; i < contactCount; ++i) {
+                uint neighbor = contacts[contactIndex];
+                contactIndex += uint(gParams.kNumParticlesAligned);
 
-        [loop]
-        for (int i = 0; i < contactCount; ++i) {
-            uint neighbor = contacts[contactIndex];
-            contactIndex += uint(gParams.kNumParticlesAligned);
-
-            float3 neighborPos = sortedNewPositionsTex[neighbor].xyz;
-            float3 delta = original.xyz - neighborPos;
-            float distSq = dot(delta, delta);
-            if (distSq > 0.0 && distSq < gParams.kRadiusSq) {
-                float q = sqrt(distSq) * gParams.kInvRadius;
-                float weight = 1.0 - q * q * q;
-                weightSum += weight;
-                positionSum += neighborPos * weight;
+                float3 neighborPos = sortedNewPositionsTex[neighbor].xyz;
+                float3 delta = original.xyz - neighborPos;
+                float distSq = dot(delta, delta);
+                if (distSq < gParams.kRadiusSq && distSq > 0.0) {
+                    float q = sqrt(distSq) * gParams.kInvRadius;
+                    float weight = 1.0 - q * q * q;
+                    positionSum += neighborPos * weight;
+                    weightSum += weight;
+                }
             }
+
+            float t = gParams.kRadius * gParams.kInvRadius * 0.5;
+            float normalization = (1.0 - t * t * t) * 4.0;
+
+            float3 average = positionSum;
+            float amount = 0.0;
+            if (weightSum > 0.0) {
+                amount = min(weightSum / normalization, 1.0);
+                average = positionSum / weightSum;
+            }
+
+            float scale = amount * gParams.kSmoothing;
+            result.xyz = original.xyz + (average - original.xyz) * scale;
         }
 
-        if (weightSum > 0.0) {
-            float normalization = 4.0 * (1.0 - pow(0.5 * gParams.kRadius * gParams.kInvRadius, 3.0));
-            float amount = min(weightSum / normalization, 1.0) * gParams.kSmoothing;
-            smoothed = original.xyz + (positionSum / weightSum - original.xyz) * amount;
-        }
+        smoothPositionsOriginal[originalIndex] = result;
+        smoothPositions[idx] = float4(result.xyz, original.w);
     }
-
-    float4 output = float4(smoothed, original.w);
-    smoothPositionsOriginal[originalIndex] = output;
-    smoothPositions[idx] = output;
 }

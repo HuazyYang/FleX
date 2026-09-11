@@ -16,106 +16,125 @@ RWStructuredBuffer<float> potentials : register(u3);
 
 [numthreads(256, 1, 1)]
 void SolveVelocities(uint idx : SV_DispatchThreadID) {
-    if (idx >= uint(gParams.kNumParticles))
-        return;
+    if (int(idx) < gParams.kNumParticles) {
+        float3 position = sortedNewPositions[idx].xyz;
+        float3 velocity = sortedNewVelocities[idx].xyz;
+        uint phase = phases[idx];
+        int count = contactCounts[idx];
 
-    float3 position = sortedNewPositions[idx].xyz;
-    float3 velocity = sortedNewVelocities[idx].xyz;
-    uint phase = phases[idx];
-    bool fluid = (phase & eNvFlexPhaseFluid) != 0;
-    int count = contactCounts[idx];
-    uint contactIndex = idx;
+        bool fluid = (phase & eNvFlexPhaseFluid) != 0;
+        bool applyVorticity = gParams.kVorticityConfinement > 0.0;
+        bool applyDiffuse = gParams.kDiffuseThreshold > 0.0;
 
-    float3 viscosityDelta = 0.0;
-    float3 vorticityGradient = 0.0;
-    float densityPotential = 0.0;
-    float diffusePotential = 0.0;
-    float neighborCount = 0.0;
+        uint contactIndex = idx;
+        float densityPotential = 0.0;
+        float diffusePotential = 0.0;
+        float3 viscosityDelta = 0.0;
+        float neighborCount = 0.0;
+        float3 vorticityGradient = 0.0;
 
-    [loop]
-    for (int i = 0; i < count; ++i) {
-        uint neighbor = contacts[contactIndex];
-        contactIndex += uint(gParams.kNumParticlesAligned);
+        [loop]
+        for (int i = 0; i < count; ++i) {
+            uint neighbor = contacts[contactIndex];
+            contactIndex += uint(gParams.kNumParticlesAligned);
 
-        float3 neighborPosition = sortedNewPositions[neighbor].xyz;
-        float3 offset = position - neighborPosition;
-        float distSq = dot(offset, offset);
-        if (distSq <= 0.0 || distSq > gParams.kRadiusSq)
-            continue;
+            float3 neighborPosition = sortedNewPositions[neighbor].xyz;
+            float3 offset = position - neighborPosition;
+            float distSq = dot(offset, offset);
+            [branch] if (distSq <= gParams.kRadiusSq && distSq > 0.0) {
+                uint neighborPhase = phases[neighbor];
+                neighborCount += 1.0;
+                bool bothFluid = fluid && ((neighborPhase & eNvFlexPhaseFluid) != 0);
 
-        neighborCount += 1.0;
-        bool neighborFluid = (phases[neighbor] & eNvFlexPhaseFluid) != 0;
-        if (fluid && neighborFluid) {
-            float dist = sqrt(distSq);
-            float3 dir = offset / dist;
-            float3 velocityDiff = sortedNewVelocities[neighbor].xyz - velocity;
-            float q = 1.0 - dist * gParams.kInvRadius;
-            float densityWeight = q * q * gParams.kSpiky1;
+                float dist = sqrt(distSq);
+                float3 dir = offset / dist;
+                float3 velocityDiff = sortedNewVelocities[neighbor].xyz - velocity;
 
-            densityPotential += densityWeight;
-            viscosityDelta += velocityDiff * (gParams.kViscosity * densityWeight * gParams.kDt);
+                float q = 1.0 - dist * gParams.kInvRadius;
+                float q2 = q * q;
+                float densityWeight = q2 * gParams.kSpiky1;
 
-            float3 grad = dir * (-gParams.kSpiky2 * q);
-            vorticityGradient += curl[neighbor].w * grad;
+                float newDensityPotential = gParams.kSpiky1 * q2 + densityPotential;
+                float3 newViscosityDelta = ((velocityDiff * gParams.kViscosity) * densityWeight) * gParams.kDt + viscosityDelta;
 
-            if (gParams.kDiffuseThreshold > 0.0)
-                diffusePotential += (length(velocityDiff) - dot(velocityDiff, dir)) * densityWeight;
-        }
-    }
+                float3 grad = dir * (q * -gParams.kSpiky2);
+                float3 newVorticityGradient = curl[neighbor].w * grad + vorticityGradient;
+                newVorticityGradient = applyVorticity ? newVorticityGradient : vorticityGradient;
 
-    float3 delta = viscosityDelta;
+                float newDiffusePotential = (length(velocityDiff) - dot(velocityDiff, dir)) * densityWeight + diffusePotential;
+                newDiffusePotential = applyDiffuse ? newDiffusePotential : diffusePotential;
 
-    if (fluid && gParams.kVorticityConfinement > 0.0 && dot(vorticityGradient, vorticityGradient) > 0.0) {
-        float3 n = normalize(vorticityGradient);
-        delta += cross(curl[idx].xyz, n) *
-                 (gParams.kDt * gParams.kDt * gParams.kInvRestDensity * gParams.kVorticityConfinement);
-    }
-
-    if (gParams.kDissipation > 0.0)
-        delta -= velocity * gParams.kDt * neighborCount * gParams.kDissipation;
-
-    if (gParams.kDamping > 0.0)
-        delta -= velocity * gParams.kDt * gParams.kDamping;
-
-    if (gParams.kRestitution > 0.0) {
-        int planeCount = collisionCounts[idx];
-        if (planeCount != 0) {
-            float3 oldVelocity = sortedVelocities[idx].xyz;
-            float3 restitutionDelta = 0.0;
-            float restitutionCount = 0.0;
-
-            [loop]
-            for (int planeIndex = 0; planeIndex < planeCount; ++planeIndex) {
-                uint collisionIndex = idx * uint(gParams.kMaxContactsPerParticle) + uint(planeIndex);
-                float4 plane = collisionPlanes[collisionIndex];
-                float distance = dot(position, plane.xyz) + plane.w - gParams.kCollisionDistance * 1.001;
-                float normalVelocity = dot(oldVelocity, plane.xyz);
-                if (distance <= 0.0 && normalVelocity < 0.0) {
-                    float reflected = gParams.kRestitution * normalVelocity + dot(velocity, plane.xyz);
-                    restitutionDelta -= reflected * plane.xyz;
-                    restitutionCount += 1.0;
-                }
+                viscosityDelta = bothFluid ? newViscosityDelta : viscosityDelta;
+                vorticityGradient = bothFluid ? newVorticityGradient : vorticityGradient;
+                densityPotential = bothFluid ? newDensityPotential : densityPotential;
+                diffusePotential = bothFluid ? newDiffusePotential : diffusePotential;
             }
-
-            delta += restitutionDelta / max(restitutionCount, 1.0);
         }
-    }
 
-    if (gParams.kDiffuseThreshold > 0.0) {
-        float potential = 0.0;
-        if (fluid) {
-            float potentialScale = max(1.0 - gParams.kInvRestDensity * densityPotential, 0.0);
-            potential = 3.0 * dot(velocity, velocity) * diffusePotential * potentialScale;
+        bool confineVorticity = densityPotential > 0.0 && gParams.kVorticityConfinement > 0.0;
+        float3 curlSelf = curl[idx].xyz;
+        float vorticityScale = gParams.kDt * gParams.kDt * gParams.kInvRestDensity * gParams.kVorticityConfinement;
+
+        float gradientSq = dot(vorticityGradient, vorticityGradient);
+        float3 gradientDir = (gradientSq > 0.0) ? vorticityGradient * rsqrt(gradientSq) : 0.0;
+
+        float3 delta = confineVorticity ? (vorticityScale * cross(gradientDir, curlSelf) + viscosityDelta)
+                                        : viscosityDelta;
+
+        float3 scaledVelocity = velocity * gParams.kDt;
+        delta = (gParams.kDissipation > 0.0) ? (-(neighborCount * scaledVelocity) * gParams.kDissipation + delta) : delta;
+        delta = (gParams.kDamping > 0.0) ? (-scaledVelocity * gParams.kDamping + delta) : delta;
+
+        if (gParams.kRestitution > 0.0) {
+            int planeCount = collisionCounts[idx];
+            if (planeCount != 0) {
+                float3 oldVelocity = sortedVelocities[idx].xyz;
+                float4 restitution = 0.0;
+
+                [loop]
+                for (int planeIndex = 0; planeIndex < planeCount; ++planeIndex) {
+                    uint collisionIndex = idx * uint(gParams.kMaxContactsPerParticle) + uint(planeIndex);
+                    float4 plane = collisionPlanes[collisionIndex];
+
+                    float distance = dot(position, plane.xyz) + plane.w - gParams.kCollisionDistance * 1.001;
+                    float normalVelocity = dot(oldVelocity, plane.xyz);
+                    bool bounce = distance <= 0.0 && normalVelocity < 0.0;
+
+                    float reflected = gParams.kRestitution * normalVelocity + dot(velocity, plane.xyz);
+                    float4 bounced = float4(-reflected * plane.xyz + restitution.xyz, restitution.w + 1.0);
+                    restitution = bounce ? bounced : restitution;
+                }
+
+                delta = restitution.xyz / max(restitution.w, 1.0) + delta;
+            }
         }
-        potentials[idx] = potential;
-    }
 
-    float3 solvedVelocity = velocity + delta;
-    if (dot(solvedVelocity, solvedVelocity) < gParams.kSleepThresholdSq) {
-        sortedNewPositions[idx].xyz = sortedPositions[idx].xyz;
-        delta = -velocity;
-    }
+        if (applyDiffuse) {
+            float speedSq = dot(velocity, velocity) * 3.0;
+            // Reconstructed verbatim from `dp2 r0.y, cb0[11].yyyy, r5.xxxx`, which sums
+            // kInvRestDensity * densityPotential twice, so the scale falls off at half the
+            // rest density. This looks like an authoring slip in the shipped shader -- the
+            // plain form would be `1 - kInvRestDensity * densityPotential` -- but the DXBC
+            // is the authority here, so keep the doubling.
+            float potentialScale = max(1.0 - dot(float2(gParams.kInvRestDensity, gParams.kInvRestDensity),
+                                                 float2(densityPotential, densityPotential)), 0.0);
+            float potential = speedSq * (diffusePotential * potentialScale);
+            potentials[idx] = (phase & eNvFlexPhaseFluid) ? potential : 0.0;
+        }
 
-    deltas.Store4(idx << 4, asuint(float4(delta, 0.0)));
-    densities[idx] = densityPotential;
+        float3 solvedVelocity = velocity + delta;
+        if (dot(solvedVelocity, solvedVelocity) < gParams.kSleepThresholdSq) {
+            sortedNewPositions[idx].xyz = sortedPositions[idx].xyz;
+            // Reconstructed verbatim from `mov r3.xyz, -r1.xxxx`: the shipped shader
+            // broadcasts -velocity.x into all three components instead of negating the
+            // whole vector, so a sleeping particle is cancelled along x and given
+            // -velocity.x on y and z. This looks like a swizzle slip in the original
+            // (`-velocity` is what the surrounding code implies), but the DXBC is the
+            // authority here, so keep the broadcast.
+            delta = -velocity.xxx;
+        }
+
+        deltas.Store4(idx << 4, asuint(float4(delta, 0.0)));
+        densities[idx] = densityPotential;
+    }
 }

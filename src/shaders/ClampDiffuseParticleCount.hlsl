@@ -5,6 +5,6 @@ RWStructuredBuffer<int> numDiffuseParticlesNew : register(u1);
 
 [numthreads(1, 1, 1)]
 void ClampDiffuseParticleCount() {
-    numDiffuseParticles[0] = min(numDiffuseParticles[0], gParams.kMaxDiffuseParticles);
+    numDiffuseParticles[0] = (int)min((float)numDiffuseParticles[0], (float)gParams.kMaxDiffuseParticles);
     numDiffuseParticlesNew[0] = 0;
 }

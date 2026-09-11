@@ -37,11 +37,11 @@ groupshared int triangleShapeCandidates[BLOCK_DIM_X * MAX_TRIANGLE_SHAPES];
 groupshared int stackOverflow[BLOCK_DIM_X][BVH_OVERFLOW_SIZE];
 
 float3 Rotate(float4 q, float3 v) {
-    return v + 2.0f * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+    return v * (2.0f * q.w * q.w - 1.0f) + cross(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
 }
 
 float3 RotateInv(float4 q, float3 v) {
-    return v + 2.0f * cross(q.xyz, cross(q.xyz, v) - q.w * v);
+    return v * (2.0f * q.w * q.w - 1.0f) - cross(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
 }
 
 float4 NormalizeQuat(float4 q) {
@@ -49,7 +49,7 @@ float4 NormalizeQuat(float4 q) {
 }
 
 bool OverlapAabb(float3 lowerA, float3 upperA, float3 lowerB, float3 upperB) {
-    return all(upperA >= lowerB) && all(upperB >= lowerA);
+    return !(any(upperA < lowerB) || any(upperB < lowerA));
 }
 
 float3 ClosestPointOnTriangle(float3 p, float3 a, float3 b, float3 c) {
@@ -135,8 +135,8 @@ void TraverseShapeBvh(
     int localIdx,
     float3 particleStart,
     float3 particleEnd,
+    inout int stack[BVH_STACK_SIZE],
     out int numTriangleShapes) {
-    int stack[BVH_STACK_SIZE];
     uint particleChannels = uint(sortedPhases[particle]) & 0xff000000u;
     float3 queryLower = min(particleStart, particleEnd) - gParams.kCollisionMargin.xxx;
     float3 queryUpper = max(particleStart, particleEnd) + gParams.kCollisionMargin.xxx;
@@ -146,47 +146,48 @@ void TraverseShapeBvh(
     stack[0] = shapeBvhRootNode[0];
     numTriangleShapes = 0;
 
-    while (stackSize > 0) {
-        stackSize--;
+    while (stackSize != 0) {
         int node;
-        if (stackSize >= BVH_STACK_SIZE) {
+        if (stackSize > BVH_STACK_SIZE) {
+            stackSize--;
             node = stackOverflow[localIdx][stackSize - BVH_STACK_SIZE];
         } else {
+            stackSize--;
             node = stack[stackSize];
         }
 
         PackedNodeHalf lowerNode = shapeBvhNodeLowers[node];
         PackedNodeHalf upperNode = shapeBvhNodeUppers[node];
 
-        if (!OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v))
-            continue;
+        if (OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v)) {
 
-        uint lowerBits = lowerNode.ib & 0x7fffffffu;
-        if ((lowerNode.ib & 0x80000000u) != 0) {
-            int flags = shapeFlags[lowerBits];
-            if (((uint(flags) & particleChannels) != 0) &&
-                ((uint(flags) & 7u) == eNvFlexShapeTriangleMesh) &&
-                numTriangleShapes < MAX_TRIANGLE_SHAPES) {
-                triangleShapeCandidates[candidateBase + numTriangleShapes] = int(lowerBits);
-                numTriangleShapes++;
-            }
-        } else {
-            int upperBits = int(upperNode.ib & 0x7fffffffu);
-            int nextSize;
-            if (stackSize >= BVH_STACK_SIZE) {
-                nextSize = stackSize + 1;
-                stackOverflow[localIdx][stackSize - BVH_STACK_SIZE] = int(lowerBits);
+            uint lowerBits = lowerNode.ib & 0x7fffffffu;
+            if (lowerNode.ib & 0x80000000u) {
+                int flags = shapeFlags[lowerBits];
+                if (((uint(flags) & particleChannels) != 0) &&
+                    ((uint(flags) & 7u) == eNvFlexShapeTriangleMesh) &&
+                    numTriangleShapes < MAX_TRIANGLE_SHAPES) {
+                    triangleShapeCandidates[candidateBase + numTriangleShapes] = int(lowerBits);
+                    numTriangleShapes++;
+                }
             } else {
-                nextSize = stackSize + 1;
-                stack[stackSize] = int(lowerBits);
-            }
+                int upperBits = int(upperNode.ib & 0x7fffffffu);
+                int nextSize;
+                if (stackSize >= BVH_STACK_SIZE) {
+                    nextSize = stackSize + 1;
+                    stackOverflow[localIdx][stackSize - BVH_STACK_SIZE] = int(lowerBits);
+                } else {
+                    nextSize = stackSize + 1;
+                    stack[stackSize] = int(lowerBits);
+                }
 
-            if (nextSize >= BVH_STACK_SIZE) {
-                stackSize = nextSize + 1;
-                stackOverflow[localIdx][nextSize - BVH_STACK_SIZE] = upperBits;
-            } else {
-                stackSize = nextSize + 1;
-                stack[nextSize] = upperBits;
+                if (nextSize >= BVH_STACK_SIZE) {
+                    stackSize = nextSize + 1;
+                    stackOverflow[localIdx][nextSize - BVH_STACK_SIZE] = upperBits;
+                } else {
+                    stackSize = nextSize + 1;
+                    stack[nextSize] = upperBits;
+                }
             }
         }
     }
@@ -198,6 +199,7 @@ void CollideTriangleMesh(
     int shape,
     float3 particleStart,
     float3 particleEnd,
+    inout int stack[BVH_STACK_SIZE],
     inout int count) {
     float3 shapePosition = shapePositions[shape].xyz;
     float4 shapeRotation = shapeRotations[shape];
@@ -211,7 +213,7 @@ void CollideTriangleMesh(
     float3 shapeEnd = shapePrevPosition + shapeDelta * gSubParams.kSubstepEnd;
     float4 qEnd = NormalizeQuat(shapePrevRotation + rotationDelta * gSubParams.kSubstepEnd);
     float4 geometry = shapeGeometry[shape];
-    int meshId = int(geometry.w) - 1;
+    int meshId = asint(geometry.w) - 1;
 
     float3 localStart = RotateInv(qStart, particleStart - shapeStart);
     float3 localEnd = RotateInv(qEnd, particleEnd - shapeEnd);
@@ -225,16 +227,16 @@ void CollideTriangleMesh(
     float4 velocity = float4((localEndAtEnd - localEndAtStart) * geometry.xyz, float(shape));
     float3 segmentDelta = localEnd - localStart;
 
-    int stack[BVH_STACK_SIZE];
     int stackSize = 1;
     stack[0] = bvhRootNodeArray[meshId];
 
-    while (stackSize > 0) {
-        stackSize--;
+    while (stackSize != 0) {
         int node;
-        if (stackSize >= BVH_STACK_SIZE) {
+        if (stackSize > BVH_STACK_SIZE) {
+            stackSize--;
             node = stackOverflow[localIdx][stackSize - BVH_STACK_SIZE];
         } else {
+            stackSize--;
             node = stack[stackSize];
         }
 
@@ -242,76 +244,76 @@ void CollideTriangleMesh(
         PackedNodeHalf lowerNode = bvhNodeLowersArray[nodeIndex];
         PackedNodeHalf upperNode = bvhNodeUppersArray[nodeIndex];
 
-        if (!OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v))
-            continue;
+        if (OverlapAabb(queryLower, queryUpper, lowerNode.v, upperNode.v)) {
 
-        uint lowerBits = lowerNode.ib & 0x7fffffffu;
-        if ((lowerNode.ib & 0x80000000u) != 0) {
-            int triIndex = int(lowerBits);
-            int indexBase = mesh.mIndexStart + triIndex * 3;
-            int i0 = triangleIndicesArray[indexBase + 0] + mesh.mVertexStart;
-            int i1 = triangleIndicesArray[indexBase + 1] + mesh.mVertexStart;
-            int i2 = triangleIndicesArray[indexBase + 2] + mesh.mVertexStart;
+            uint lowerBits = lowerNode.ib & 0x7fffffffu;
+            if (lowerNode.ib & 0x80000000u) {
+                int triIndex = int(lowerBits);
+                int indexBase = mesh.mIndexStart + triIndex * 3;
+                int i0 = triangleIndicesArray[indexBase + 0] + mesh.mVertexStart;
+                int i1 = triangleIndicesArray[indexBase + 1] + mesh.mVertexStart;
+                int i2 = triangleIndicesArray[indexBase + 2] + mesh.mVertexStart;
 
-            float3 va = triangleVerticesArray[i0].xyz * geometry.xyz;
-            float3 vb = triangleVerticesArray[i1].xyz * geometry.xyz;
-            float3 vc = triangleVerticesArray[i2].xyz * geometry.xyz;
-            float3 ab = vb - va;
-            float3 ac = vc - va;
-            float3 normal = normalize(cross(ab, ac));
-            float planeW = dot(va, normal);
-            float startDist = dot(localStart, normal) - planeW;
-            float endDist = dot(localEnd, normal) - planeW;
+                float3 va = triangleVerticesArray[i0].xyz * geometry.xyz;
+                float3 vb = triangleVerticesArray[i1].xyz * geometry.xyz;
+                float3 vc = triangleVerticesArray[i2].xyz * geometry.xyz;
+                float3 ab = vb - va;
+                float3 ac = vc - va;
+                float3 normal = normalize(cross(ab, ac));
+                float planeW = dot(va, normal);
+                float startDist = dot(localStart, normal) - planeW;
+                float endDist = dot(localEnd, normal) - planeW;
 
-            bool hit = false;
-            float4 plane = float4(normal, planeW);
+                bool hit = false;
+                float4 plane = float4(normal, planeW);
 
-            if (endDist >= 0.0f && endDist < gParams.kCollisionMargin) {
-                float3 closest = ClosestPointOnTriangle(localEnd, va, vb, vc);
-                float3 delta = localEnd - closest;
-                float distSq = dot(delta, delta);
-                hit = distSq <= gParams.kCollisionMarginSq;
+                if (endDist >= 0.0f && endDist < gParams.kCollisionMargin) {
+                    float3 closest = ClosestPointOnTriangle(localEnd, va, vb, vc);
+                    float3 delta = localEnd - closest;
+                    float distSq = dot(delta, delta);
+                    hit = distSq <= gParams.kCollisionMarginSq;
+
+                    if (hit) {
+                        float lenSq = dot(delta, delta);
+                        float3 contactNormal = lenSq > 0.0f ? delta * rsqrt(lenSq) : normal;
+                        plane = float4(contactNormal, dot(contactNormal, closest));
+                    }
+                }
+
+                [branch] if (!hit && startDist > 0.0f && endDist < 0.0f) {
+                    hit = SegmentIntersectsTriangle(localStart, localEnd, va, vb, vc);
+                }
 
                 if (hit) {
-                    float lenSq = dot(delta, delta);
-                    float3 contactNormal = lenSq > 0.0f ? delta * rsqrt(lenSq) : normal;
-                    plane = float4(contactNormal, dot(contactNormal, closest));
+                    StoreTriangleContact(
+                        particle,
+                        count,
+                        shape,
+                        gParams.kMaxContactsPerParticle,
+                        shapeEnd,
+                        qEnd,
+                        velocity,
+                        plane.xyz,
+                        plane.w);
                 }
-            }
-
-            if (!hit && startDist > 0.0f && endDist < 0.0f) {
-                hit = SegmentIntersectsTriangle(localStart, localEnd, va, vb, vc);
-            }
-
-            if (hit) {
-                StoreTriangleContact(
-                    particle,
-                    count,
-                    shape,
-                    gParams.kMaxContactsPerParticle,
-                    shapeEnd,
-                    qEnd,
-                    velocity,
-                    plane.xyz,
-                    plane.w);
-            }
-        } else {
-            int upperBits = int(upperNode.ib & 0x7fffffffu);
-            int nextSize;
-            if (stackSize >= BVH_STACK_SIZE) {
-                nextSize = stackSize + 1;
-                stackOverflow[localIdx][stackSize - BVH_STACK_SIZE] = int(lowerBits);
             } else {
-                nextSize = stackSize + 1;
-                stack[stackSize] = int(lowerBits);
-            }
+                int upperBits = int(upperNode.ib & 0x7fffffffu);
+                int nextSize;
+                if (stackSize >= BVH_STACK_SIZE) {
+                    nextSize = stackSize + 1;
+                    stackOverflow[localIdx][stackSize - BVH_STACK_SIZE] = int(lowerBits);
+                } else {
+                    nextSize = stackSize + 1;
+                    stack[stackSize] = int(lowerBits);
+                }
 
-            if (nextSize >= BVH_STACK_SIZE) {
-                stackSize = nextSize + 1;
-                stackOverflow[localIdx][nextSize - BVH_STACK_SIZE] = upperBits;
-            } else {
-                stackSize = nextSize + 1;
-                stack[nextSize] = upperBits;
+                if (nextSize >= BVH_STACK_SIZE) {
+                    stackSize = nextSize + 1;
+                    stackOverflow[localIdx][nextSize - BVH_STACK_SIZE] = upperBits;
+                } else {
+                    stackSize = nextSize + 1;
+                    stack[nextSize] = upperBits;
+                }
             }
         }
     }
@@ -322,16 +324,17 @@ void CollideTriangles(int particle : SV_DispatchThreadID, int localIdx : SV_Grou
     if (particle < gParams.kNumParticles) {
         float3 particleStart = sortedPositions[particle].xyz;
         float3 particleEnd = sortedNewPositions[particle].xyz;
+        int stack[BVH_STACK_SIZE];
         int numTriangleShapes = 0;
 
         if (gParams.kNumShapes != 0) {
-            TraverseShapeBvh(particle, localIdx, particleStart, particleEnd, numTriangleShapes);
+            TraverseShapeBvh(particle, localIdx, particleStart, particleEnd, stack, numTriangleShapes);
         }
 
         int count = 0;
         for (int i = 0; i < numTriangleShapes; ++i) {
             int candidate = triangleShapeCandidates[localIdx * MAX_TRIANGLE_SHAPES + i];
-            CollideTriangleMesh(particle, localIdx, candidate, particleStart, particleEnd, count);
+            CollideTriangleMesh(particle, localIdx, candidate, particleStart, particleEnd, stack, count);
         }
 
         collisionCounts[particle] = count;

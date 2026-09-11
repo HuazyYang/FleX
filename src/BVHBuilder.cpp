@@ -3,7 +3,6 @@
 #include "Data.h"
 #include "Library.h"
 #include "ClientHelper.h"
-#include <cmrc/cmrc.hpp>
 
 #include <bvh/CalculateMortonCodes.hlsl.h>
 #include <bvh/CalculateKeyDeltas.hlsl.h>

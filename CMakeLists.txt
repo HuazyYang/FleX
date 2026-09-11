@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.25)
 
 project(NvFlex VERSION 1.2.0)
 
@@ -39,7 +39,7 @@ if(MSVC)
         _HAS_ITERATOR_DEBUGGING=0
         _ITERATOR_DEBUG_LEVEL=0)
 
-    if(NVFLEX_WINDOWS_CLANG_CROSS)
+    if(CMAKE_CROSSCOMPILING)
         add_compile_options(
             "$<$<CONFIG:Debug>:-gdwarf>"
             "$<$<COMPILE_LANGUAGE:CXX>:-fdelayed-template-parsing>"
@@ -51,13 +51,9 @@ endif()
 include(cmake/CMakeRC.cmake)
 include(cmake/CopyAsset.cmake)
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/thirdparty/ShaderTool/cmake")
-set(ShaderTool_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ShaderTool")
-if(WINDOWS_WINE_CROSS)
-    set(ShaderTool_CROSSCOMPILING_EMULATOR wine)
-    set(ShaderTool_WINDOWS_WINE_CROSS ON)
-endif()
-find_package(ShaderTool REQUIRED)
+add_subdirectory(thirdparty/ShaderTool EXCLUDE_FROM_ALL)
+set(ShaderTool_DIR "${CMAKE_BINARY_DIR}/thirdparty/ShaderTool")
+find_package(ShaderTool CONFIG REQUIRED)
 
 # NvFlexLib
 add_library(NvFlexLib SHARED IMPORTED)
@@ -123,6 +119,5 @@ set_target_properties(AGS PROPERTIES
 add_subdirectory(src)
 add_subdirectory(extensions)
 add_subdirectory(demo)
-
 
 

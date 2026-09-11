@@ -45,7 +45,7 @@ CMRC_DECLARE(nvflex);
 #include "CollideParticles.hlsl_rev.h"
 #include "CollideShapes.hlsl_rev.h"
 #include "ContinuousShockPropagation.hlsl.h"
-#include "CalculateDensity.hlsl_rev.h"
+#include "CalculateDensity.hlsl.h"
 #include "CalculateDensitySurfaceTension.hlsl_rev.h"
 #include "SolveDensities.hlsl_rev.h"
 #include "SolveDensitiesNonFluid.hlsl_rev.h"
@@ -58,25 +58,25 @@ CMRC_DECLARE(nvflex);
 #include "SolveShapesPlasticDeformation128NV.hlsl_rev.h"
 #include "SolveShapes.hlsl_rev.h"
 #include "SolveShapesPlasticDeformation.hlsl_rev.h"
-#include "ApplyDeltas.hlsl_rev.h"
+#include "ApplyDeltas.hlsl.h"
 #include "SolveContactsSequential.hlsl_rev.h"
 #include "SolveContactsAveraged.hlsl_rev.h"
 #include "SolveContactsAccumulate.hlsl_rev.h"
 #include "CollideTriangles.hlsl_rev.h"
-#include "UpdateVelocities.hlsl_rev.h"
+#include "UpdateVelocities.hlsl.h"
 #include "SolveVelocities.hlsl_rev.h"
-#include "Finalize.hlsl_rev.h"
-#include "CreateDiffuseParticles.hlsl_rev.h"
+#include "Finalize.hlsl.h"
+#include "CreateDiffuseParticles.hlsl.h"
 #include "UpdateDiffuseParticles.hlsl_rev.h"
-#include "ClampDiffuseParticleCount.hlsl_rev.h"
+#include "ClampDiffuseParticleCount.hlsl.h"
 #include "CompactDiffuseParticles.hlsl.h"
 #include "SmoothPositions.hlsl_rev.h"
 #include "CalculateAnisotropy.hlsl_rev.h"
 #include "ComputeTriangleBounds.hlsl.h"
 #include "TransformShapeBounds.hlsl_rev.h"
-#include "SpringsGenerateIndices.hlsl_rev.h"
-#include "SpringsParticleRange.hlsl_rev.h"
-#include "SpringsReorder.hlsl_rev.h"
+#include "SpringsGenerateIndices.hlsl.h"
+#include "SpringsParticleRange.hlsl.h"
+#include "SpringsReorder.hlsl.h"
 
 namespace NvFlex {
 
@@ -377,7 +377,7 @@ void Library::ClearBufferInt(NvFlexBuffer* buffer, NvFlexUint sizeInBytes, NvFle
         params.shader = mShaderClearInt;
         params.rootConstantBuffer = mShaderClearConstantBufferInt;
         params.readWrite[0] = NvFlexBufferGetResourceRW(buffer);
-        params.gridDim = make_dim(divCeil<256>(sizeInBytes / 4), 1, 1);
+        params.gridDim = make_dim(divCeil<256>(sizeInBytes / sizeof(int)), 1, 1);
         NvFlexContextDispatch(mContext, &params);
     }
 }
