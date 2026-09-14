@@ -54,8 +54,21 @@ authority for reverse-recovery work.
    // byte constant definition follows
   ```
 
-- On Linux the same comparison can be run directly with the Wine-hosted Windows
-  SDK compiler, which is the only way to judge bytecode equivalence:
+- The round trip through FXC is the only way to judge bytecode equivalence. On
+  Windows the SDK compiler is used directly:
+  ```
+  fxc=$(find "/c/Program Files (x86)/Windows Kits/10/bin" -path '*/x64/fxc.exe' \
+      | sort -Vr | head -1)
+  "$fxc" -nologo -T cs_5_0 -E <Entry> -Iexternal/nvapi/include -Fh out.h \
+      src/shaders/<Name>.hlsl_rev
+  ```
+  Under Git Bash, export `MSYS2_ARG_CONV_EXCL='*'` and `MSYS_NO_PATHCONV=1`
+  first: MSYS otherwise rewrites `/nologo` into a path and FXC reports
+  `Too many files specified`. With path conversion off, give `-Fh` a Windows
+  path (forward slashes are fine) and keep the source path relative to the
+  repository root.
+
+  On Linux the same command runs under Wine:
   ```
   fxc=$(find "${WINEPREFIX:-$HOME/.wineprefixes/dev-x64}/drive_c/Program Files (x86)/Windows Kits/10/bin" \
       -path '*/x64/fxc.exe' | sort -Vr | head -1)
@@ -63,13 +76,19 @@ authority for reverse-recovery work.
   ```
   Keep the input and output paths relative to the repository root; FXC runs
   under Wine and cannot open absolute Linux paths.
+
   Extract the block from `cs_5_0` to `#endif` in `out.h` (it is CRLF), strip the
   `dcl_constantbuffer` / `dcl_resource_*` / `dcl_uav_*` / `dcl_globalFlags` /
   `dcl_indexableTemp` lines and the trailing `// Approximately N instruction
   slots used` comment, then diff against the same range of `../dxbc/g_*.asm`.
-  A second pass with register names normalised away
+  The shipped `.asm` files were disassembled by 3Dmigoto, which prints float
+  literals with eight decimals where FXC prints six, so collapse them first
+  (`sed -E 's/([0-9]+[.][0-9]{6})[0-9]+/\1/g'`) or `1.0e-9` reads as a
+  difference. A second pass with register names normalised away
   (`sed -E 's/\br[0-9]+\.[xyzw]+/R/g; s/\br[0-9]+\b/R/g'`) separates real
-  differences from register-allocation noise.
+  differences from register-allocation noise; a third pass that also drops
+  `mov` lines isolates control-flow and arithmetic differences from FXC 6.3's
+  copy noise, which dominates the large shaders.
 
 - Vendor extension variants use the real vendor header, never a local
   transcription: `#include <nvHLSLExtns.h>` from `external/nvapi/include`, which
@@ -79,6 +98,36 @@ authority for reverse-recovery work.
   intrinsic: opcode 3 is `NV_EXTN_OP_SHFL_DOWN`, and `NV_EXTN_OP_SHFL_XOR` is 4.
   Note `grep` can silently fail to match inside these headers because they are
   ISO-8859 rather than UTF-8; pipe through `tr -d '\r'` and use `LC_ALL=C`.
+
+- Several apparent "compiler version" differences are in fact source-controlled.
+  Before writing one off, try these levers, which between them took seven groups
+  from `Equivalent` to `Exact`:
+
+  - **Commutative operand order.** FXC 10.1 emits the operands of `mul` in the
+    reverse of their source order, so `a * b` disassembles as `mul b, a`; write
+    the HLSL the other way round to match the DXBC. `mad`, `add`, `min` and
+    `and` behave the same way in most, though not all, positions, so confirm
+    each swap with a round trip rather than assuming.
+  - **Scheduling by hoisting.** FXC 6.3 emits loop-invariant work in source
+    order ahead of the loop; 10.1 sinks it to first use. Binding the expression
+    to a named local before the loop (`int lastContact = count - 1;`,
+    `bool adhesionEnabled = gParams.kAdhesion != 0.0;`) restores the shipped
+    order. The same trick fixes load placement inside a loop body.
+  - **Vectorised selects.** Where the DXBC selects several values in one wide
+    `movc`, write the selects as a single `float4`/`float2` ternary rather than
+    as separate scalar ones.
+  - **Basis-axis `cross()`.** 10.1 will not fold `cross(q.xyz, float3(1,0,0))`
+    down to one masked `mul`. Supply the folded cross and dot to a `RotateBasis`
+    helper (see `TransformShapeBounds.hlsl_rev`, `SolveShapes.hlsl_rev`) and the
+    single instruction comes back.
+  - **Gate shape.** An `a && b && c` chain compiles to `and`s feeding one
+    `if_nz`; the DXBC's nested `if_nz` gates need nested `if` statements in the
+    source. Likewise, where the DXBC performs a store inside a helper rather
+    than gating on its return value, the helper has to do the store.
+  - **Groupshared stores.** Clearing a `float3x3` by rows rather than columns
+    reproduces the shipped three 12-byte `store_raw`s instead of 16/16/4.
+  - **Signed versus unsigned shifts.** `threadIdx >> 5` on a `uint` emits
+    `ushr`; the DXBC's `ishr` needs `int(threadIdx) >> 5`.
 
 - The shipped `.asm` files were produced by FXC 6.3.9600 (Windows 8.1 SDK); the
   SDK available here is FXC 10.1. Even for a perfect source recovery the two
@@ -100,10 +149,12 @@ authority for reverse-recovery work.
   semantics over high-level rewrites.
 
 - Use `.hlsl_rev` while a hand-recovered source is still being reconciled with
-  its DXBC. Once its group reaches `Exact` in the status table below, rename it
-  to `.hlsl` and update its `Shaders.cfg` line and table row in the same change;
-  the suffix marks work in progress, not provenance. Every `.hlsl_rev` file in
-  this folder is listed in `Shaders.cfg`.
+  its DXBC. Once its group reaches `Exact` or `Verified` in the status table
+  below, rename it to `.hlsl` and update its `Shaders.cfg` line, its
+  `src/Library.cpp` generated-header include, and its table row in the same
+  change; the suffix marks work in progress, not provenance. A group that is
+  still `Equivalent` keeps `.hlsl_rev` until runtime verification clears it.
+  Every `.hlsl_rev` file in this folder is listed in `Shaders.cfg`.
 
 - Entry-point names must match the shader group name without the `g_Flex_` or
   `g_bvh_` prefix. Wrapper variants such as `SolveShapes32NV.hlsl_rev` may
@@ -137,16 +188,25 @@ source is the corresponding `.asm` disassembly in `../dxbc`; DXBC-side `.hlsl`
 artifacts are only rough decompiler hints.
 
 For `.hlsl_rev` groups the status now records the result of an FXC round trip
-(see the Wine FXC recipe above), not just a reading of the source:
+(see the FXC recipe above), not just a reading of the source:
 
 - `Exact` — the recovered source recompiles to disassembly identical to the
   shipped `.asm` once the binding/`dcl_*` declarations and the trailing
   instruction-count comment are removed.
-- `Equivalent` — the opcode sequence and control flow match the shipped `.asm`
-  one for one; the remaining textual differences are the FXC 6.3 vs 10.1
-  artifacts listed under Development Guidelines (register allocation, in-block
-  scheduling, commutative operand order, write masks, and folding of `cross()`
-  against a literal basis vector).
+- `Verified` — not byte-identical, but the structural audit below passes on all
+  five axes *and* the opcode histogram matches exactly. Every remaining
+  difference is register naming, in-block scheduling, or the operand order of a
+  commutative instruction. Accepted as trustworthy without a runtime check.
+- `Equivalent` — control flow, `dcl_*` bindings, constant-buffer fields and
+  memory effects are identical, and every remaining arithmetic difference has
+  been individually accounted for as an FXC 6.3 vs 10.1 artifact (register
+  allocation, in-block scheduling, commutative operand order, write masks,
+  vector packing, and folding of `cross()` against a literal basis vector).
+  It does **not** promise equal opcode counts — see the audit below for what is
+  actually checked, and for the cases where counts legitimately differ. These
+  groups are **pending runtime verification**: the structural audit rules out
+  every divergence that changes control flow, memory effects or bindings, but it
+  is not a proof, and one mislabelled group (see below) shows why that matters.
 - `Partial` — some instruction blocks still differ in substance; the divergence
   is named in the notes under the table.
 
@@ -154,77 +214,173 @@ The `.hlsl` groups have now been through the same round trip and carry the same
 three statuses. Only the BVH and radix-sort groups are still marked `Complete`,
 meaning reviewed against the DXBC but not round-tripped here.
 
-Summary: 84 DXBC shader groups, of which 67 have been round-tripped — 31
-recompile exactly, 34 recompile to an equivalent instruction sequence, and 2 are
-partial; the remaining 17 (BVH, radix sort) stay `Complete`.
+Summary: 84 DXBC shader groups, of which 67 have been round-tripped — 38
+recompile exactly, 6 are `Verified`, and 23 are `Equivalent` and awaiting
+runtime verification. No group is `Partial` any more; the remaining 17 (BVH,
+radix sort) stay `Complete`.
 
-The ten hand-recovered groups that reached `Exact` have been renamed from
-`.hlsl_rev` to `.hlsl`, leaving 23 `.hlsl_rev` sources: 21 equivalent and 2
-partial. Counting by entry point rather than file, 31 of the 67 round-tripped
-groups recompile exactly.
+Eighteen hand-recovered groups have reached `Exact` or `Verified` and been
+renamed from `.hlsl_rev` to `.hlsl`, leaving 15 `.hlsl_rev` sources, all
+`Equivalent`.
+
+The six `Verified` groups are `g_Flex_ContinuousShockPropagation`,
+`g_Flex_CreateGrid`, `g_Flex_Predict`, `g_Flex_SolveSprings`,
+`g_Flex_SolveSpringsNV` and `g_Flex_UpdateDiffuseParticles`. Their entire
+residual is:
+
+- `CreateGrid`, `SolveSprings`, `SolveSpringsNV`, `UpdateDiffuseParticles` —
+  register naming only, plus one commutative `mul` order in
+  `UpdateDiffuseParticles`; identical after register normalisation.
+- `Predict` — one `rsq` scheduled two instructions later.
+- `ContinuousShockPropagation` — one `ld_raw` scheduled one instruction later
+  and one `add` with its operands the other way round.
+
+Next round: runtime verification for the 23 `Equivalent` groups — run the
+shipped bytecode and the recompiled bytecode over identical inputs and compare
+the output buffers. Until that lands, treat `Equivalent` as "no structural
+divergence found", not as "known to agree".
+
+The two groups that were `Partial` are no longer so. Both were control-flow
+*shape* differences, and both were fixed at the source level:
+
+- `CollideShapes.hlsl_rev` — `SdfContact` no longer returns a hit flag for the
+  caller to gate on. The DXBC nests the contact store inside the gradient test,
+  so `SdfContact` takes the store parameters and calls `StoreContact` itself.
+  With that change every `if_nz` / `else` / `endif` / `switch` / `break` matches
+  one for one, and the only opcodes whose counts still differ are `mul` (66 vs
+  54), `mad` (63 vs 55) and `mov` (209 vs 50).
+- `CollideTriangles.hlsl_rev` — the three tests that gate collecting a triangle
+  shape are written as nested `if` statements again rather than one `&&` chain,
+  which restores the DXBC's three `if_nz` gates. Control flow now matches
+  exactly; `mul` (40 vs 32), `mad` (49 vs 41) and `mov` still differ.
+
+What remains in the `Equivalent` group, largest first, and why:
+
+- `CollideShapes.hlsl_rev` (231 lines after register normalisation, 64 once
+  `mov` lines are also dropped) and `CollideTriangles.hlsl_rev` (128, 59). FXC
+  6.3 emits a cross product as a two-wide `mul`/`mad` pair plus a scalar
+  `mul`/`mad`, where 10.1 packs it three-wide; each such site costs two
+  instructions. The rest is copy noise — `CollideShapes` carries 209 `mov`s
+  against 50.
+- The `SolveShapes` family (42 to 70). Three causes remain after the
+  `RotateBasis`, row-wise groupshared clear and scalar `QuatMul` fixes: 10.1
+  re-vectorises part of the quaternion multiply and lowers the normalise as
+  `dp4`; it folds a duplicated `t7` load of the same index into one; and in the
+  `*NV` variants it hoists the lane split out of the two inlined reductions
+  where 6.3 recomputes `and l(31)` / `ishr l(5)` at each use.
+- `CollideParticles.hlsl_rev` (20). 10.1 preloads
+  `gParams.kMaxNeighborsPerParticle` into a register and then has to carry it
+  through the three-deep cell loop, which costs six `mov`s that 6.3 avoids by
+  reading the constant buffer at the use site.
+- `TransformShapeBounds.hlsl_rev` (15). The centre rotate's `cross()` is split
+  two-wide-plus-scalar by 6.3, and the two shape-position loads are sunk to
+  their use sites there but hoisted by 10.1.
+- `CalculateAnisotropy.hlsl_rev` (13). 6.3 packs the nine covariance entries
+  into `r3.xyzw`/`r4.xyzw`/`r2.z` and accumulates them with four-wide `mad`s;
+  10.1 keeps the `float3x3` as three separate rows.
+- `SolveVelocities.hlsl_rev` (7). 6.3 shuffles the vorticity gradient into
+  `r4.yzw` (`mov r4.xyzw, r4.yzzx`) and the split cross product that follows
+  costs two instructions.
+- `SmoothPositions.hlsl_rev` (4) is the clearest case of pure allocation noise:
+  the shipped `.asm` carries an `else` arm whose only contents are `mov r, r`
+  copies of the same value the `then` arm produces, and 10.1 coalesces the
+  registers and drops the arm.
+- The three `CalculateInflatableVolume` variants (58 to 78). The residual is
+  the scalar-versus-vector read-modify-write of the 12 groupshared bytes that
+  hold the running centre: FXC 6.3 emits three `ld_raw`/`add`/`store_raw`
+  triples at byte offsets 0, 4 and 8 where 10.1 emits one three-component
+  triple at offset 0. The block runs on thread 0 only, between two
+  `sync_g_t`s, so the two forms are interchangeable.
+- `UpdateTriangles` and `UpdateTrianglesNV` (17) carry the wind vector in
+  reversed `zyx` component order through the averaging and the length test, and
+  un-reverse it (`r5.wzyw`) before normalising, so the packing is undone before
+  the value is used; plus tighter cross-product packing in 10.1.
 
 Every recovered source is listed in `Shaders.cfg` exactly once with an entry
-point equal to its file stem; all of them compile with the Windows SDK FXC as
-`cs_5_0` and pass a DXC `-T cs_6_0 -HV 2016` syntax check, whose only diagnostics are the two
-intentional `-Wparameter-usage` warnings for `planeW` in
-`CollideShapes.hlsl_rev` (`BoxContact` and `SdfContact` write their out
-parameters only on the hit path, as the DXBC does; both sites carry a comment
-saying so). No source in this folder contains a decompiler placeholder.
+point equal to its file stem, and all of them compile with the Windows SDK FXC
+as `cs_5_0`. The only FXC diagnostics are three intentional ones: the
+`potentially uninitialized variable` warnings for `p0` in `CollideParticles`
+and for `lower`/`upper` in `TransformShapeBounds`, which reproduce the DXBC's
+habit of leaving an output unwritten on the miss path, and a register-pressure
+performance note on `CollideTriangles`. No source in this folder contains a
+decompiler placeholder.
 
-Known remaining divergence. No recovered source is now known to disagree with
-its `.asm` on what it computes. The two `Partial` rows are control-flow *shape*
-differences, where the two compiler versions emit the same computation with a
-different branch layout; they are recorded as `Partial` rather than `Equivalent`
-only because the number of branches does not match one for one.
+Note that the DXC in the Windows 10.0.19041 SDK does not resolve the
+angle-bracket `#include <nvHLSLExtns.h>` from `-I`, so the DXC syntax check
+covers every recovered source except the six NV `SolveShapes` variants. FXC is
+the authority for this work in any case.
 
-- `CollideShapes.hlsl_rev` — FXC 10.1 materialises `SdfContact`'s boolean
-  return into a register (one extra `else` holding `mov r, l(0)`) and merges the
-  gradient test into the store gate with an extra `and`, where FXC 6.3 nested
-  the store directly inside the gate. `if_nz`, `endif`, `loop`, `switch` and
-  `break` counts are otherwise identical on both sides, no resource access
-  differs, and the arithmetic matches. `CapsuleContact` is now the full
-  segment-versus-segment closest-point test with both `div_sat` clamps, matching
-  the DXBC; the earlier axis-clamp approximation is gone.
-- `CollideTriangles.hlsl_rev` — FXC 10.1 flattens three nested `if_nz` gates in
-  the triangle-collection loop into `ine` plus two `and` feeding a single
-  `if_nz`, so the new build has two fewer `if_nz`/`endif` pairs. It also hoists
-  the particle load block above the neighbour loop. Nothing else differs beyond
-  register allocation and `mad`/`mul` packing.
-Among the `.hlsl` groups the largest residuals are the three
-`CalculateInflatableVolume` variants (58 to 167 lines after register
-normalisation). Their reductions match the DXBC exactly — same shuffle/swizzle
-counts, same groupshared traffic, same barrier count, no control-flow
-asymmetry — and the residual is FXC 6.3 hoisting the sixteen unrolled partial-sum
-indices into registers (`dcl_temps` 34 versus 19 on the NV variant) together with
-swizzle packing. `UpdateTriangles` and `UpdateTrianglesNV` (19) carry the wind
-vector in reversed `zyx` component order throughout, which is a packing choice,
-plus tighter cross-product packing in 10.1.
+## Equivalence audit
 
-The largest residuals among the `Equivalent` group are worth knowing so they are
-not mistaken for regressions. `SmoothPositions.hlsl_rev` (6 lines after register
-normalisation) is the clearest case of pure allocation noise: the shipped `.asm`
-carries an `else` arm whose only contents are `mov r, r` copies of the same value
-the `then` arm produces, and FXC 10.1 coalesces the registers and drops the arm.
-An `else` that holds nothing but register copies is register allocation, not a
-control-flow difference, which is why this counts as `Equivalent`. `CalculateAnisotropy.hlsl_rev` (66 lines after
-register normalisation) differs by FXC 6.3 lowering one `sqrt()` as `rsq` plus
-`mul` where 10.1 emits `sqrt`, and by the final clamp being one vector
-`sqrt`/`mul`/`max`/`min` group in 6.3 versus three scalar groups in 10.1.
-The whole `SolveShapes` family — `SolveShapes.hlsl_rev` (61),
-`SolveShapesPlasticDeformation.hlsl_rev` (71) and the six `*NV` variants (65 to
-83) — shares one set of causes. FXC 10.1 folds the `cross()` calls against a
-literal basis vector inside `ExtractRotation` differently and packs the
-quaternion rotate into `dp3`/`mad`/`dp4` where 6.3 emits a nine-instruction
-scalar `mad` chain; the groupshared covariance clear is written `xyzw`/`xyzw`/`x`
-at offsets 0/16/32 instead of `xyz` at 0/12/24 (the same 36 bytes); and 10.1
-folds a duplicated `t7` load of the same index (`r3.y`) into one, which is the
-only resource-access count that differs anywhere in the family. The `*NV`
-variants add one more: 10.1 feeds `bfi` and `if_z` from `vThreadIDInGroup.x`
-directly and computes the lane split once as `and l(31)` plus `ushr l(5)`, where
-6.3 copies the value into a register and recomputes `and l(31)` / `ishr l(5)` at
-each use. Control flow, atomics (`imm_atomic_alloc` 128, `imm_atomic_cmp_exch` 0)
-and every `store_raw` / `store_structured` / `sync` / `ld_raw` count are equal on
-both sides for all six.
+A diff of the disassembly is not by itself evidence of equivalence, so every
+`Equivalent` group has been checked mechanically on five axes that a
+register-allocation difference cannot disturb:
+
+1. `dcl_*` — resource slots, buffer strides, raw vs structured vs typed kinds,
+   UAV declarations, `dcl_tgsm` sizes, `dcl_thread_group`, `dcl_globalFlags`.
+2. Control flow — counts of `if_nz` / `if_z` / `else` / `endif` / `loop` /
+   `endloop` / `break` / `breakc_*` / `switch` / `case` / `ret` / `sync_*`.
+3. Memory effects — counts of every `ld_*` / `store_*` / `imm_atomic_*` /
+   `sample*`, and the number of references to each `t#` / `u#` / `g#`.
+4. Constant-buffer fields — the set of distinct `cb0[n]` / `cb1[n]` slots read.
+5. Literals — the multiset of immediate values.
+
+All five axes, plus the full opcode histogram, match on the six `Verified`
+groups. Across the 23 `Equivalent` groups axes 1, 2 and 4 match everywhere. The known and accepted exceptions on
+the other two axes, each inspected individually, are:
+
+- **Redundant-load elimination.** The `SolveShapes` family loads
+  `localNormals[entry]` (`t7`) twice in the shipped code and once in ours
+  (`ld_structured_indexable` 18 vs 17, or 21 vs 20). `t7` is an SRV, read-only
+  for the whole dispatch, and both loads use the same index, so the values are
+  identical.
+- **Scalar versus vector groupshared read-modify-write.** See the
+  `CalculateInflatableVolume` note above: the same 12 bytes, the same addition,
+  one thread, same barriers.
+- **`cross()` packing.** FXC 6.3 emits a cross product as a two-wide `mul`/`mad`
+  pair plus a scalar `mul`/`mad`; 10.1 packs it three-wide. Two extra
+  instructions per site, identical per-component arithmetic. This accounts for
+  the bulk of the `mul`/`mad` deltas in `CollideShapes`, `CollideTriangles`,
+  `TransformShapeBounds`, `CalculateVorticity`, `SolveInflatableVolume`,
+  `UpdateTriangles` and `SolveVelocities`.
+- **Common-subexpression elimination.** `CollideTriangles` computes a delta and
+  its `dp3` twice in the shipped code, once with each operand order; since
+  `dot(-D, -D) == dot(D, D)` bit for bit, 10.1 keeps one (`dp3` 22 vs 21). The
+  normalised direction that follows uses the same operand order on both sides,
+  so the contact normal does not flip.
+- **Boolean materialisation.** `CalculateVorticity` has two `ine r, r, l(0)`
+  that 10.1 folds away. Both results feed only an `if_z`, where the truth value
+  is unchanged.
+- **Literal component placement.** Differences such as `l(0,1,2,0)` versus
+  `l(1,0,0,2)` are the same constants moved to different components to follow a
+  different destination write mask.
+
+Two caveats that the audit cannot remove, and which apply to the shipped
+bytecode just as much as to ours:
+
+- The `SolveShapes` family emits one `dp4` for the quaternion length where the
+  shipped code emits a `mul`/`add`/`mad` chain. The summation order inside a
+  dot-product opcode is implementation-defined, so this term can differ by
+  roughly an ulp. It feeds a `> 0` test and an `rsqrt`, so nothing downstream
+  is sensitive to it.
+- Both builds declare `dcl_globalFlags refactoringAllowed`, which permits the
+  driver to reassociate and to fuse `mul`/`add` into `mad`. Bit-exact results
+  were therefore never guaranteed even for the shipped bytecode across two
+  different GPUs; "same disassembly" is a stronger property than these shaders
+  ever relied on.
+
+One group that the audit caught. `CalculateInflatableVolumeNV` and
+`CalculateInflatableVolumeAMD` used to sum all sixteen per-wave partials
+unconditionally, where the DXBC sums only `min(numTrisInBlock, 512) >> 5` of
+them, predicating the unrolled adds on a counter carried in the `.w` lane. The
+partials past that count are zero except for the wave that straddles the end of
+the block, so the shipped shader drops that wave's triangles whenever
+`numTrisInBlock` is not a multiple of 32 — a rounding quirk it shares with the
+generic path's `numTrisInBlock >> 1` tree. `ReduceCenter` and `ReduceVolume`
+now take the bound from `numTrisInBlock`, as the parameter's presence in the
+signature always implied, and `dcl_temps` on the NV variant went from 19 to the
+shipped 34 as a result. This was a genuine behavioural divergence, not a
+packing artifact, and it had been mislabelled `Equivalent`.
 
 Behaviour worth knowing, preserved because the DXBC is authoritative:
 
@@ -263,7 +419,7 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_CalculateBoundsGroupNV` | `CalculateBoundsGroup.hlsl` | Exact |
 | Flex | `g_Flex_CalculateBoundsNV` | `CalculateBounds.hlsl` | Exact |
 | Flex | `g_Flex_CalculateDensity` | `CalculateDensity.hlsl` | Exact |
-| Flex | `g_Flex_CalculateDensitySurfaceTension` | `CalculateDensitySurfaceTension.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_CalculateDensitySurfaceTension` | `CalculateDensitySurfaceTension.hlsl` | Exact |
 | Flex | `g_Flex_CalculateInflatableVolume` | `CalculateInflatableVolume.hlsl` | Equivalent |
 | Flex | `g_Flex_CalculateInflatableVolumeAMD` | `CalculateInflatableVolume.hlsl` | Equivalent |
 | Flex | `g_Flex_CalculateInflatableVolumeNV` | `CalculateInflatableVolume.hlsl` | Equivalent |
@@ -274,24 +430,24 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_ClearFloat4` | `ClearFloat4.hlsl` | Exact |
 | Flex | `g_Flex_ClearInt` | `ClearInt.hlsl` | Exact |
 | Flex | `g_Flex_CollideParticles` | `CollideParticles.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_CollideShapes` | `CollideShapes.hlsl_rev` | Partial |
-| Flex | `g_Flex_CollideTriangles` | `CollideTriangles.hlsl_rev` | Partial |
+| Flex | `g_Flex_CollideShapes` | `CollideShapes.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_CollideTriangles` | `CollideTriangles.hlsl_rev` | Equivalent |
 | Flex | `g_Flex_CompactDiffuseParticles` | `CompactDiffuseParticles.hlsl` | Exact |
 | Flex | `g_Flex_ComputeTriangleBounds` | `ComputeTriangleBounds.hlsl` | Exact |
-| Flex | `g_Flex_ContinuousShockPropagation` | `ContinuousShockPropagation.hlsl` | Equivalent |
+| Flex | `g_Flex_ContinuousShockPropagation` | `ContinuousShockPropagation.hlsl` | Verified |
 | Flex | `g_Flex_CreateDiffuseParticles` | `CreateDiffuseParticles.hlsl` | Exact |
-| Flex | `g_Flex_CreateGrid` | `CreateGrid.hlsl` | Equivalent |
+| Flex | `g_Flex_CreateGrid` | `CreateGrid.hlsl` | Verified |
 | Flex | `g_Flex_Finalize` | `Finalize.hlsl` | Exact |
 | Flex | `g_Flex_NormalizeVertexNormals` | `NormalizeVertexNormals.hlsl` | Exact |
-| Flex | `g_Flex_Predict` | `Predict.hlsl` | Equivalent |
+| Flex | `g_Flex_Predict` | `Predict.hlsl` | Verified |
 | Flex | `g_Flex_ReorderParticles` | `ReorderParticles.hlsl` | Exact |
 | Flex | `g_Flex_SmoothPositions` | `SmoothPositions.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveContactsAccumulate` | `SolveContactsAccumulate.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveContactsAveraged` | `SolveContactsAveraged.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveContactsSequential` | `SolveContactsSequential.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveDensities` | `SolveDensities.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveDensitiesNonFluid` | `SolveDensitiesNonFluid.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveDensitiesSurfaceTension` | `SolveDensitiesSurfaceTension.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_SolveContactsAccumulate` | `SolveContactsAccumulate.hlsl` | Exact |
+| Flex | `g_Flex_SolveContactsAveraged` | `SolveContactsAveraged.hlsl` | Exact |
+| Flex | `g_Flex_SolveContactsSequential` | `SolveContactsSequential.hlsl` | Exact |
+| Flex | `g_Flex_SolveDensities` | `SolveDensities.hlsl` | Exact |
+| Flex | `g_Flex_SolveDensitiesNonFluid` | `SolveDensitiesNonFluid.hlsl` | Exact |
+| Flex | `g_Flex_SolveDensitiesSurfaceTension` | `SolveDensitiesSurfaceTension.hlsl` | Exact |
 | Flex | `g_Flex_SolveInflatableVolume` | `SolveInflatableVolume.hlsl` | Equivalent |
 | Flex | `g_Flex_SolveInflatableVolumeNV` | `SolveInflatableVolume.hlsl` | Equivalent |
 | Flex | `g_Flex_SolveShapes` | `SolveShapes.hlsl_rev` | Equivalent |
@@ -302,14 +458,14 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_SolveShapesPlasticDeformation128NV` | `SolveShapesPlasticDeformation128NV.hlsl_rev` | Equivalent |
 | Flex | `g_Flex_SolveShapesPlasticDeformation32NV` | `SolveShapesPlasticDeformation32NV.hlsl_rev` | Equivalent |
 | Flex | `g_Flex_SolveShapesPlasticDeformationNV` | `SolveShapesPlasticDeformationNV.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveSprings` | `SolveSprings.hlsl` | Equivalent |
-| Flex | `g_Flex_SolveSpringsNV` | `SolveSprings.hlsl` | Equivalent |
+| Flex | `g_Flex_SolveSprings` | `SolveSprings.hlsl` | Verified |
+| Flex | `g_Flex_SolveSpringsNV` | `SolveSprings.hlsl` | Verified |
 | Flex | `g_Flex_SolveVelocities` | `SolveVelocities.hlsl_rev` | Equivalent |
 | Flex | `g_Flex_SpringsGenerateIndices` | `SpringsGenerateIndices.hlsl` | Exact |
 | Flex | `g_Flex_SpringsParticleRange` | `SpringsParticleRange.hlsl` | Exact |
 | Flex | `g_Flex_SpringsReorder` | `SpringsReorder.hlsl` | Exact |
 | Flex | `g_Flex_TransformShapeBounds` | `TransformShapeBounds.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_UpdateDiffuseParticles` | `UpdateDiffuseParticles.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_UpdateDiffuseParticles` | `UpdateDiffuseParticles.hlsl` | Verified |
 | Flex | `g_Flex_UpdateTriangles` | `UpdateTriangles.hlsl` | Equivalent |
 | Flex | `g_Flex_UpdateTrianglesInit` | `UpdateTrianglesInit.hlsl` | Exact |
 | Flex | `g_Flex_UpdateTrianglesNV` | `UpdateTriangles.hlsl` | Equivalent |

@@ -10,7 +10,7 @@ StructuredBuffer<float4> sortedNormals : register(t7);
 RWByteAddressBuffer deltas : register(u0);
 
 [numthreads(256, 1, 1)]
-void SolveDensitiesSurfaceTension(uint idx : SV_DispatchThreadID) {
+void SolveDensities(uint idx : SV_DispatchThreadID) {
     if (int(idx) < gParams.kNumParticles) {
         float4 particle = sortedNewPositions[idx];
         if (particle.w == 0.0) {
@@ -40,7 +40,6 @@ void SolveDensitiesSurfaceTension(uint idx : SV_DispatchThreadID) {
             if (distSq <= gParams.kRadiusSq && distSq > 0.0) {
                 float dist = sqrt(distSq);
                 float3 dir = offset * (1.0 / dist);
-                float4 neighborNormal = sortedNormals[neighborIndex];
                 uint neighborPhase = phases[neighborIndex];
                 bool neighborFluid = (neighborPhase & eNvFlexPhaseFluid) != 0;
 
@@ -57,13 +56,13 @@ void SolveDensitiesSurfaceTension(uint idx : SV_DispatchThreadID) {
                     float cohesion = gParams.kCohesion1 * (q * q2) + gParams.kCohesion2 * q2 - 1.0;
                     float cohesiveTerm = gParams.kCohesion * cohesion + densityTerm;
                     float3 withCohesion = delta.xyz - (particle.w * cohesiveTerm) * dir;
-                    withCohesion -= normalSelf.xyz - neighborNormal.xyz;
 
                     delta.xyz = differentPhase ? withoutCohesion : withCohesion;
                 } else {
                     if (dist > gParams.kSolidRestDistance)
                         continue;
 
+                    float4 neighborNormal = sortedNormals[neighborIndex];
                     float massWeight = particle.w / (particle.w + neighbor.w);
                     float4 surface = (neighborNormal.w < selfNormal.w) ? neighborNormal : selfNormal;
 
@@ -95,9 +94,9 @@ void SolveDensitiesSurfaceTension(uint idx : SV_DispatchThreadID) {
                     float invTangentLength = rsqrt(tangentSq);
                     float staticLimit = penetration * gParams.kStaticFriction;
                     bool staticRegime = tangentSq < staticLimit * staticLimit;
-                    float3 weightedTangent = tangent * massWeight;
-                    float3 staticCorrection = corrected - tangent * massWeight;
-                    float dynamicScale = min(invTangentLength * (-penetration * gParams.kParticleFriction), 1.0);
+                    float3 weightedTangent = massWeight * tangent;
+                    float3 staticCorrection = corrected - massWeight * tangent;
+                    float dynamicScale = min((-penetration * gParams.kParticleFriction) * invTangentLength, 1.0);
                     float3 dynamicCorrection = corrected - weightedTangent * dynamicScale;
 
                     float3 frictionCorrection = staticRegime ? staticCorrection : dynamicCorrection;

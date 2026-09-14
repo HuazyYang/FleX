@@ -208,7 +208,7 @@ bool CapsuleContact(
     float3 closestOnAxis = float3(extent * axisParam + axisLower, 0.0f, 0.0f);
     float3 separation = closestOnSeg - closestOnAxis;
 
-    float reach = gParams.kCollisionThreshold + gParams.kCollisionDistance + radius;
+    float reach = gParams.kCollisionDistance + gParams.kCollisionThreshold + radius;
     bool axisContact = reach * reach >= dot(separation, separation);
 
     normal = SafeNormalize(delta);
@@ -240,13 +240,13 @@ bool BoxContact(
 
     best = min(abs(toMax.x), best);
     if (abs(toMin.x) < best) { plane = float4(-1.0f,  0.0f,  0.0f, -halfExtents.x); }
-    best = min(best, abs(toMin.x));
+    best = min(abs(toMin.x), best);
     if (abs(toMax.y) < best) { plane = float4( 0.0f,  1.0f,  0.0f, -halfExtents.y); }
-    best = min(abs(toMax.y), best);
+    best = min(best, abs(toMax.y));
     if (abs(toMin.y) < best) { plane = float4( 0.0f, -1.0f,  0.0f, -halfExtents.y); }
-    best = min(abs(toMin.y), best);
+    best = min(best, abs(toMin.y));
     if (abs(toMax.z) < best) { plane = float4( 0.0f,  0.0f,  1.0f, -halfExtents.z); }
-    best = min(abs(toMax.z), best);
+    best = min(best, abs(toMax.z));
     if (abs(toMin.z) < best) { plane = float4( 0.0f,  0.0f, -1.0f, -halfExtents.z); }
 
     normal = plane.xyz;
@@ -310,8 +310,22 @@ bool ConvexContact(
     return enter < exit;
 }
 
-bool SdfContact(float3 localEnd, float scale, int fieldId, out float3 normal, out float planeW) {
-    // See BoxContact: the out parameters are only written on the hit path, as in the DXBC.
+// The DXBC nests the contact store inside the gradient gate rather than returning
+// a hit flag, so the store is performed here instead of at the call site.
+void SdfContact(
+    float3 localEnd,
+    float scale,
+    int fieldId,
+    int particle,
+    inout int count,
+    int shape,
+    int flags,
+    float4 qStart,
+    float4 qEnd,
+    float3 xStart,
+    float3 xEnd,
+    float3 particleEnd) {
+
     int sdfIndex = fieldId - 1;
     float invScale = 1.0f / scale;
     float3 uvw = localEnd * invScale;
@@ -331,13 +345,25 @@ bool SdfContact(float3 localEnd, float scale, int fieldId, out float3 normal, ou
             float3 gradient = float3(dx, dy, dz);
             float gradientSq = dot(gradient, gradient);
 
-            normal = gradient * rsqrt(gradientSq);
-            planeW = scale * dist - dot(normal, scale * uvw);
-            return gradientSq > 0.0f;
+            if (gradientSq > 0.0f) {
+                float3 normal = gradient * rsqrt(gradientSq);
+                float planeW = scale * dist - dot(normal, scale * uvw);
+                StoreContact(
+                    particle,
+                    count,
+                    shape,
+                    flags,
+                    qStart,
+                    qEnd,
+                    xStart,
+                    xEnd,
+                    particleEnd,
+                    localEnd,
+                    normal,
+                    planeW);
+            }
         }
     }
-
-    return false;
 }
 
 [numthreads(BLOCK_DIM_X, 1, 1)]
@@ -459,8 +485,10 @@ void CollideShapes(int particle : SV_DispatchThreadID) {
                             localNormal,
                             localPlaneW);
                     } else if (type == eNvFlexShapeSDF) {
-                        if (SdfContact(localEnd, geometry.x, asint(geometry.y), localNormal, localPlaneW))
-                            StoreContact(
+                        SdfContact(
+                            localEnd,
+                            geometry.x,
+                            asint(geometry.y),
                             particle,
                             count,
                             shape,
@@ -469,10 +497,7 @@ void CollideShapes(int particle : SV_DispatchThreadID) {
                             qEnd,
                             xStart,
                             xEnd,
-                            particleEnd,
-                            localEnd,
-                            localNormal,
-                            localPlaneW);
+                            particleEnd);
                     }
                     }
                 } else {

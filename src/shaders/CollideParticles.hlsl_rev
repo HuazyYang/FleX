@@ -31,6 +31,7 @@ void CollideParticles(int globalIdx: SV_DispatchThreadID) {
             p0 = restPositions[indices[globalIdx]].xyz;
         }
 
+        int selfNext = globalIdx + 1;
         int nextNeighborIdx = globalIdx;
         int numNeighbors = 0;
 
@@ -43,7 +44,7 @@ void CollideParticles(int globalIdx: SV_DispatchThreadID) {
 
                     for (int cellId = cellStart; cellId < cellEnd;) {
                         if (cellId == globalIdx) {
-                            cellId = globalIdx + 1;
+                            cellId = selfNext;
                             continue;
                         }
 

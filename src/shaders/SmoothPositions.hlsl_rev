@@ -40,12 +40,14 @@ void SmoothPositions(uint idx : SV_DispatchThreadID) {
             float t = gParams.kRadius * gParams.kInvRadius * 0.5;
             float normalization = (1.0 - t * t * t) * 4.0;
 
-            float3 average = positionSum;
-            float amount = 0.0;
-            if (weightSum > 0.0) {
-                amount = min(weightSum / normalization, 1.0);
-                average = positionSum / weightSum;
-            }
+            float scaledWeight = min(weightSum / normalization, 1.0);
+            bool hasWeight = weightSum > 0.0;
+            float3 weightedAverage = positionSum / weightSum;
+
+            float4 smoothing = hasWeight ? float4(weightedAverage, scaledWeight)
+                                         : float4(positionSum, 0.0);
+            float3 average = smoothing.xyz;
+            float amount = smoothing.w;
 
             float scale = amount * gParams.kSmoothing;
             result.xyz = original.xyz + (average - original.xyz) * scale;

@@ -12,10 +12,11 @@ RWStructuredBuffer<float4> q3 : register(u2);
 void JacobiRotate(inout float3x3 a, inout float3x3 v, int p, int q) {
     float apq = a[p][q];
     if (apq != 0.0) {
-        float theta = (a[p][p] - a[q][q]) * rcp(apq + apq);
-        float t = sign(theta) * rcp(sqrt(theta * theta + 1.0) + abs(theta));
+        float diagonalDelta = a[p][p] - a[q][q];
+        float theta = diagonalDelta * rcp(apq + apq);
+        float t = rcp(sqrt(theta * theta + 1.0) + abs(theta)) * sign(theta);
         float c = rsqrt(t * t + 1.0);
-        float s = t * c;
+        float s = c * t;
 
         float app = a[p][p];
         float aqq = a[q][q];
@@ -38,8 +39,10 @@ void JacobiRotate(inout float3x3 a, inout float3x3 v, int p, int q) {
 
         float3 vp = v[p];
         float3 vq = v[q];
-        v[p] = c * vp + s * vq;
-        v[q] = -s * vp + c * vq;
+        float3 sq = s * vq;
+        float3 cq = c * vq;
+        v[p] = c * vp + sq;
+        v[q] = -s * vp + cq;
     }
 }
 
@@ -72,7 +75,7 @@ void EigenSymmetric3x3(inout float3x3 a, out float3x3 v) {
     }
 }
 
-float AnisotropyScale(float eigenValue) {
+float3 AnisotropyScale(float3 eigenValue) {
     return clamp(sqrt(eigenValue) * gParams.kAnisotropy,
                  gParams.kAnisotropyMin,
                  gParams.kAnisotropyMax);
@@ -96,15 +99,17 @@ void CalculateAnisotropy(uint idx : SV_DispatchThreadID) {
                 float3 delta = position - neighborPos;
                 float distSq = dot(delta, delta);
                 if (distSq < gParams.kRadiusSq && distSq > 0.0) {
-                    float q = sqrt(distSq) * gParams.kInvRadius;
+                    // The DXBC spells sqrt(distSq) as distSq * rsqrt(distSq).
+                    float q = (distSq * rsqrt(distSq)) * gParams.kInvRadius;
                     float weight = 1.0 - q * q * q;
-                    weighted += float4(neighborPos * weight, weight);
+                    weighted.xyz = neighborPos * weight + weighted.xyz;
+                    weighted.w = weighted.w + weight;
                 }
             }
         }
 
         uint originalIndex = indices[idx];
-        if (contactCount < 0 || weighted.w == 0.0) {
+        if (weighted.w == 0.0 || contactCount < 0) {
             q1[originalIndex] = float4(1.0, 0.0, 0.0, gParams.kAnisotropyMin);
             q2[originalIndex] = float4(0.0, 1.0, 0.0, gParams.kAnisotropyMin);
             q3[originalIndex] = float4(0.0, 0.0, 1.0, gParams.kAnisotropyMin);
@@ -130,9 +135,9 @@ void CalculateAnisotropy(uint idx : SV_DispatchThreadID) {
                     float q = sqrt(distSq) * gParams.kInvRadius;
                     float weight = 1.0 - q * q * q;
                     float3 delta = neighborPos - weighted.xyz * invWeightSum;
-                    covariance[0] += weight * (delta.x * delta);
-                    covariance[1] += weight * (delta.y * delta);
-                    covariance[2] += weight * (delta.z * delta);
+                    covariance[0] += weight * (delta * delta.x);
+                    covariance[1] += weight * (delta * delta.y);
+                    covariance[2] += weight * (delta * delta.z);
                 }
             }
         }
@@ -144,8 +149,10 @@ void CalculateAnisotropy(uint idx : SV_DispatchThreadID) {
         float3x3 eigenVectors;
         EigenSymmetric3x3(covariance, eigenVectors);
 
-        q1[originalIndex] = float4(eigenVectors[0], AnisotropyScale(covariance[0][0]));
-        q2[originalIndex] = float4(eigenVectors[1], AnisotropyScale(covariance[1][1]));
-        q3[originalIndex] = float4(eigenVectors[2], AnisotropyScale(covariance[2][2]));
+        // The DXBC clamps all three eigenvalues with one vector sqrt/mul/max/min group.
+        float3 scales = AnisotropyScale(float3(covariance[0][0], covariance[1][1], covariance[2][2]));
+        q1[originalIndex] = float4(eigenVectors[0], scales.x);
+        q2[originalIndex] = float4(eigenVectors[1], scales.y);
+        q3[originalIndex] = float4(eigenVectors[2], scales.z);
     }
 }

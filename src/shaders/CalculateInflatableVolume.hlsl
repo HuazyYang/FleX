@@ -76,9 +76,10 @@ float3 ReduceCenter(int threadIdx, int numTrisInBlock, float3 center) {
     GroupMemoryBarrierWithGroupSync();
 
     if (threadIdx == 0) {
+        const int waveCount = int(uint(numTrisInBlock) >> uint(WAVE_SIZE_BITS));
         float3 total = centersInBlock[0];
         [unroll]
-        for (i = 1; i < (BLOCK_DIM_X / WAVE_SIZE); ++i)
+        for (i = 1; i < waveCount; ++i)
             total = total + centersInBlock[i];
         centersInBlock[0] = total;
     }
@@ -128,9 +129,10 @@ float ReduceVolume(int threadIdx, int numTrisInBlock, float vol) {
     GroupMemoryBarrierWithGroupSync();
 
     if (threadIdx == 0) {
+        const int waveCount = int(uint(numTrisInBlock) >> uint(WAVE_SIZE_BITS));
         float total = volumesInBlock[0];
         [unroll]
-        for (i = 1; i < (BLOCK_DIM_X / WAVE_SIZE); ++i)
+        for (i = 1; i < waveCount; ++i)
             total = total + volumesInBlock[i];
         volumesInBlock[0] = total;
     }

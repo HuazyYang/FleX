@@ -31,7 +31,7 @@ void CalculateDensitySurfaceTension(uint idx : SV_DispatchThreadID) {
             float q = 1.0 - dist * gParams.kInvRadius;
             density += phaseWeight * (q * q * gParams.kSpiky1);
             float scale = q * -gParams.kSpiky2;
-            normal += (delta * scale) / dist;
+            normal += (scale * delta) / dist;
         }
     }
 

@@ -41,6 +41,13 @@ float3 RotateVector(float4 q, float3 v) {
     return v * (2.0 * q.w * q.w - 1.0) + cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
 }
 
+// Same rotation with cross(q.xyz, v) and dot(q.xyz, v) supplied pre-folded. The
+// DXBC collapses each basis-axis cross into one masked mul, which is only
+// reproducible when the folded form is written out.
+float3 RotateBasis(float4 q, float3 v, float3 crossQV, float dotQV) {
+    return v * (2.0 * q.w * q.w - 1.0) + crossQV * q.w * 2.0 + q.xyz * dotQV * 2.0;
+}
+
 void LocalShapeBounds(uint shapeType, float4 geom, out float3 lower, out float3 upper) {
     switch (shapeType) {
     case eNvFlexShapeSphere:
@@ -77,9 +84,12 @@ void LocalShapeBounds(uint shapeType, float4 geom, out float3 lower, out float3 
 }
 
 void TransformBounds(float3 position, float4 rotation, float3 lower, float3 upper, out float3 outLower, out float3 outUpper) {
-    float3 axisX = RotateVector(rotation, float3(1.0, 0.0, 0.0));
-    float3 axisY = RotateVector(rotation, float3(0.0, 1.0, 0.0));
-    float3 axisZ = RotateVector(rotation, float3(0.0, 0.0, 1.0));
+    float3 axisX = RotateBasis(rotation, float3(1.0, 0.0, 0.0),
+                               float3(0.0, rotation.z, -rotation.y), rotation.x);
+    float3 axisY = RotateBasis(rotation, float3(0.0, 1.0, 0.0),
+                               float3(-rotation.z, 0.0, rotation.x), rotation.y);
+    float3 axisZ = RotateBasis(rotation, float3(0.0, 0.0, 1.0),
+                               float3(rotation.y, -rotation.x, 0.0), rotation.z);
 
     float3 edges = upper - lower;
     float3 worldExtents = abs(axisX * edges.x) + abs(axisY * edges.y);

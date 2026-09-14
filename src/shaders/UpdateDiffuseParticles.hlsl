@@ -32,17 +32,18 @@ void UpdateDiffuseParticles(uint idx : SV_DispatchThreadID) {
         int start = cellBucketStarts[cell];
         int end = cellBucketEnds[cell];
         float3 weightedVelocity = 0.0;
-        float weightSum = 0.0;
         int firstContactCount = 0;
+        float weightSum = 0.0;
 
         [loop]
         for (int i = start; i < end; ++i) {
             float3 delta = diffusePosition.xyz - sortedNewPositionsTex[i].xyz;
             float distSq = dot(delta, delta);
             if (distSq < gParams.kRadiusSq) {
+                float3 neighborVelocity = sortedNewVelocitiesTex[i].xyz;
                 float weight = 1.0 - distSq * gParams.kInvRadius;
                 weightSum += weight;
-                weightedVelocity += sortedNewVelocitiesTex[i].xyz * weight;
+                weightedVelocity += neighborVelocity * weight;
                 if (firstContactCount == 0)
                     firstContactCount = contactCounts[i];
             }
@@ -61,8 +62,14 @@ void UpdateDiffuseParticles(uint idx : SV_DispatchThreadID) {
                                    gParams.kGravity * gParams.kDiffuseDt;
         ballisticVelocity = LimitDiffuseVelocity(ballisticVelocity);
         float3 ballisticPosition = diffusePosition.xyz + ballisticVelocity * gParams.kDiffuseDt;
-        float3 velocity = coupledToFluid ? draggedVelocity : ballisticVelocity;
-        float3 position = coupledToFluid ? draggedPosition : ballisticPosition;
+
+        // The DXBC selects velocity.xyz together with position.x in one movc and
+        // position.yz in a second; keep the pairing so the movc widths match.
+        float4 velocityAndPositionX = coupledToFluid ? float4(draggedVelocity, draggedPosition.x)
+                                                     : float4(ballisticVelocity, ballisticPosition.x);
+        float2 positionYZ = coupledToFluid ? draggedPosition.yz : ballisticPosition.yz;
+        float3 velocity = velocityAndPositionX.xyz;
+        float3 position = float3(velocityAndPositionX.w, positionYZ);
 
         [loop]
         for (int planeIndex = 0; planeIndex < gParams.kNumPlanes; ++planeIndex) {

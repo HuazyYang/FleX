@@ -164,11 +164,14 @@ void TraverseShapeBvh(
             uint lowerBits = lowerNode.ib & 0x7fffffffu;
             if (lowerNode.ib & 0x80000000u) {
                 int flags = shapeFlags[lowerBits];
-                if (((uint(flags) & particleChannels) != 0) &&
-                    ((uint(flags) & 7u) == eNvFlexShapeTriangleMesh) &&
-                    numTriangleShapes < MAX_TRIANGLE_SHAPES) {
-                    triangleShapeCandidates[candidateBase + numTriangleShapes] = int(lowerBits);
-                    numTriangleShapes++;
+                // Three nested gates, as the DXBC has them: one `and`/`if_nz` per test.
+                if (uint(flags) & particleChannels) {
+                    if ((uint(flags) & 7u) == eNvFlexShapeTriangleMesh) {
+                        if (numTriangleShapes < MAX_TRIANGLE_SHAPES) {
+                            triangleShapeCandidates[candidateBase + numTriangleShapes] = int(lowerBits);
+                            numTriangleShapes++;
+                        }
+                    }
                 }
             } else {
                 int upperBits = int(upperNode.ib & 0x7fffffffu);

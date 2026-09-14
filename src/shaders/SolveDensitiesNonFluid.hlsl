@@ -70,9 +70,9 @@ void SolveDensitiesNonFluid(uint idx : SV_DispatchThreadID) {
                 float invTangentLength = rsqrt(tangentSq);
                 float staticLimit = penetration * gParams.kStaticFriction;
                 bool staticRegime = tangentSq < staticLimit * staticLimit;
-                float3 weightedTangent = tangent * massWeight;
-                float3 staticCorrection = corrected - tangent * massWeight;
-                float dynamicScale = min(invTangentLength * (-penetration * gParams.kParticleFriction), 1.0);
+                float3 weightedTangent = massWeight * tangent;
+                float3 staticCorrection = corrected - massWeight * tangent;
+                float dynamicScale = min((-penetration * gParams.kParticleFriction) * invTangentLength, 1.0);
                 float3 dynamicCorrection = corrected - weightedTangent * dynamicScale;
 
                 float3 frictionCorrection = staticRegime ? staticCorrection : dynamicCorrection;

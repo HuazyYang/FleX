@@ -15,26 +15,30 @@ void SolveContactsAveraged(uint idx : SV_DispatchThreadID) {
             if (position.w == 0.0)
                 return;
 
-            float3 relativePosition = position.xyz - prevPositions[idx].xyz;
+            int lastContact = count - 1;
+            bool adhesionEnabled = gParams.kAdhesion != 0.0;
+            bool dynamicFrictionEnabled = gParams.kDynamicFriction > 0.0;
+
+            float3 relativePosition = -prevPositions[idx].xyz + position.xyz;
             float3 correctionSum = 0.0;
             float penetrationCount = 0.0;
 
             [loop]
-            for (int contact = count - 1; contact >= 0; --contact) {
+            for (int contact = lastContact; contact >= 0; --contact) {
                 uint contactIndex = idx * uint(gParams.kMaxContactsPerParticle) + uint(contact);
                 float4 plane = collisionPlanes[contactIndex];
 
                 float separation = dot(position.xyz, plane.xyz) + plane.w;
                 float penetration = separation - gParams.kCollisionDistance;
 
-                if (gParams.kAdhesion != 0.0)
-                    correctionSum = correctionSum - plane.xyz * (separation * gParams.kAdhesion);
+                if (adhesionEnabled)
+                    correctionSum = correctionSum - (separation * gParams.kAdhesion) * plane.xyz;
 
                 [branch] if (penetration < 0.0) {
                     float3 normalCorrection = correctionSum - penetration * plane.xyz;
                     penetrationCount += 1.0;
 
-                    bool frictionEnabled = gParams.kDynamicFriction > 0.0 && dot(plane.xyz, plane.xyz) > 0.0;
+                    bool frictionEnabled = dot(plane.xyz, plane.xyz) > 0.0 && dynamicFrictionEnabled;
 
                     float3 relativeMotion = relativePosition - collisionVelocities[contactIndex].xyz;
                     float3 tangent = relativeMotion - dot(relativeMotion, plane.xyz) * plane.xyz;
@@ -45,7 +49,7 @@ void SolveContactsAveraged(uint idx : SV_DispatchThreadID) {
                     bool staticRegime = tangentSq < staticLimit * staticLimit;
                     float3 staticCorrection = normalCorrection - tangent;
                     bool sliding = tangentSq > 0.0;
-                    float dynamicScale = min(invTangentLength * (-penetration * gParams.kDynamicFriction), 1.0);
+                    float dynamicScale = min((-penetration * gParams.kDynamicFriction) * invTangentLength, 1.0);
                     float3 dynamicCorrection = normalCorrection - tangent * dynamicScale;
 
                     float3 frictionCorrection = sliding ? dynamicCorrection : normalCorrection;

@@ -19,8 +19,11 @@ groupshared float3 gReduce[64];
 groupshared float4 gRotation;
 
 float4 QuatMul(float4 a, float4 b) {
-    return float4(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz),
-                  a.w * b.w - dot(a.xyz, b.xyz));
+    float x = a.w * b.x + b.w * a.x + (a.y * b.z - a.z * b.y);
+    float y = a.w * b.y + b.w * a.y + (a.z * b.x - a.x * b.z);
+    float z = a.w * b.z + b.w * a.z + (a.x * b.y - a.y * b.x);
+    float w = a.w * b.w - (a.x * b.x + a.y * b.y + a.z * b.z);
+    return float4(x, y, z, w);
 }
 
 float4 NormalizeQuat(float4 q) {
@@ -37,12 +40,18 @@ float3 Rotate(float4 q, float3 v) {
     return v * (2.0 * q.w * q.w - 1.0) + cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
 }
 
+// Rotation with cross(q.xyz, v) and dot(q.xyz, v) supplied pre-folded: the DXBC
+// collapses each basis-axis cross into a single masked mul.
+float3 RotateBasis(float4 q, float3 v, float3 crossQV, float dotQV) {
+    return v * (2.0 * q.w * q.w - 1.0) + crossQV * q.w * 2.0 + q.xyz * dotQV * 2.0;
+}
+
 float4 ExtractRotation(float3 c0, float3 c1, float3 c2, float4 q) {
     [loop]
     for (int i = 0; i < 4; ++i) {
-        float3 r0 = Rotate(q, float3(1.0, 0.0, 0.0));
-        float3 r1 = Rotate(q, float3(0.0, 1.0, 0.0));
-        float3 r2 = Rotate(q, float3(0.0, 0.0, 1.0));
+        float3 r0 = RotateBasis(q, float3(1.0, 0.0, 0.0), float3(0.0, q.z, -q.y), q.x);
+        float3 r1 = RotateBasis(q, float3(0.0, 1.0, 0.0), float3(-q.z, 0.0, q.x), q.y);
+        float3 r2 = RotateBasis(q, float3(0.0, 0.0, 1.0), float3(q.y, -q.x, 0.0), q.z);
 
         float3 numerator = cross(r0, c0) + cross(r1, c1) + cross(r2, c2);
         float denominator = dot(r0, c0) + dot(r1, c1) + dot(r2, c2);
@@ -90,9 +99,9 @@ void SolveShapes(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
     if (threadIdx == 0) {
         gCenter = 0.0;
         gPrevTranslation = translations[rigid];
-        gCovariance._11_21_31 = 0.0;
-        gCovariance._12_22_32 = 0.0;
-        gCovariance._13_23_33 = 0.0;
+        gCovariance._11_12_13 = 0.0;
+        gCovariance._21_22_23 = 0.0;
+        gCovariance._31_32_33 = 0.0;
     }
 
     [loop]
@@ -182,7 +191,7 @@ void SolveShapes(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
             float4 localNormal = localNormals[entry];
             normals[particle] = float4(Rotate(rotation, localNormals[entry].xyz), localNormal.w);
 
-            AccumulateDelta(sortedIndex, coefficient * -difference);
+            AccumulateDelta(sortedIndex, -difference * coefficient);
         }
     }
 }

@@ -54,7 +54,7 @@ void SolveVelocities(uint idx : SV_DispatchThreadID) {
                 float q2 = q * q;
                 float densityWeight = q2 * gParams.kSpiky1;
 
-                float newDensityPotential = gParams.kSpiky1 * q2 + densityPotential;
+                float newDensityPotential = q2 * gParams.kSpiky1 + densityPotential;
                 float3 newViscosityDelta = ((velocityDiff * gParams.kViscosity) * densityWeight) * gParams.kDt + viscosityDelta;
 
                 float3 grad = dir * (q * -gParams.kSpiky2);
@@ -66,12 +66,15 @@ void SolveVelocities(uint idx : SV_DispatchThreadID) {
 
                 viscosityDelta = bothFluid ? newViscosityDelta : viscosityDelta;
                 vorticityGradient = bothFluid ? newVorticityGradient : vorticityGradient;
-                densityPotential = bothFluid ? newDensityPotential : densityPotential;
-                diffusePotential = bothFluid ? newDiffusePotential : diffusePotential;
+                // The DXBC selects both potentials in one two-component movc.
+                float2 potentialPair = bothFluid ? float2(newDensityPotential, newDiffusePotential)
+                                                 : float2(densityPotential, diffusePotential);
+                densityPotential = potentialPair.x;
+                diffusePotential = potentialPair.y;
             }
         }
 
-        bool confineVorticity = densityPotential > 0.0 && gParams.kVorticityConfinement > 0.0;
+        bool confineVorticity = gParams.kVorticityConfinement > 0.0 && densityPotential > 0.0;
         float3 curlSelf = curl[idx].xyz;
         float vorticityScale = gParams.kDt * gParams.kDt * gParams.kInvRestDensity * gParams.kVorticityConfinement;
 
@@ -82,7 +85,7 @@ void SolveVelocities(uint idx : SV_DispatchThreadID) {
                                         : viscosityDelta;
 
         float3 scaledVelocity = velocity * gParams.kDt;
-        delta = (gParams.kDissipation > 0.0) ? (-(neighborCount * scaledVelocity) * gParams.kDissipation + delta) : delta;
+        delta = (gParams.kDissipation > 0.0) ? (-(scaledVelocity * neighborCount) * gParams.kDissipation + delta) : delta;
         delta = (gParams.kDamping > 0.0) ? (-scaledVelocity * gParams.kDamping + delta) : delta;
 
         if (gParams.kRestitution > 0.0) {
