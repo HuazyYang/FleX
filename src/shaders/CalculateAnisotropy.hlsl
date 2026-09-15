@@ -14,9 +14,9 @@ void JacobiRotate(inout float3x3 a, inout float3x3 v, int p, int q) {
     if (apq != 0.0) {
         float diagonalDelta = a[p][p] - a[q][q];
         float theta = diagonalDelta * rcp(apq + apq);
-        float t = rcp(sqrt(theta * theta + 1.0) + abs(theta)) * sign(theta);
+        float t = rcp(abs(theta) + sqrt(theta * theta + 1.0)) * sign(theta);
         float c = rsqrt(t * t + 1.0);
-        float s = c * t;
+        float s = t * c;
 
         float app = a[p][p];
         float aqq = a[q][q];
@@ -63,7 +63,7 @@ void EigenSymmetric3x3(inout float3x3 a, out float3x3 v) {
             axis = 2;
             largest = abs(a[1][2]);
         }
-        if (largest < 1.0e-9)
+        if (largest < 1.0e-15)
             break;
 
         if (axis == 0)
@@ -117,9 +117,15 @@ void CalculateAnisotropy(uint idx : SV_DispatchThreadID) {
         }
 
         float invWeightSum = 1.0 / weighted.w;
-        float3x3 covariance = float3x3(0.0, 0.0, 0.0,
-                                       0.0, 0.0, 0.0,
-                                       0.0, 0.0, 0.0);
+
+        // The DXBC accumulates the nine covariance entries as 4 + 4 + 1 lanes,
+        // not as three rows: acc0 = (xx, xy, xz, yx), acc1 = (yy, yz, zx, zy),
+        // acc2 = zz. Matching that packing matters -- with refactoringAllowed the
+        // driver re-rounds differently per packing, and the Jacobi sweep below
+        // turns a one-ulp difference into a different eigenvector basis.
+        float4 acc0 = 0.0;
+        float4 acc1 = 0.0;
+        float acc2 = 0.0;
 
         contactIndex = idx;
         [loop]
@@ -135,16 +141,22 @@ void CalculateAnisotropy(uint idx : SV_DispatchThreadID) {
                     float q = sqrt(distSq) * gParams.kInvRadius;
                     float weight = 1.0 - q * q * q;
                     float3 delta = neighborPos - weighted.xyz * invWeightSum;
-                    covariance[0] += weight * (delta * delta.x);
-                    covariance[1] += weight * (delta * delta.y);
-                    covariance[2] += weight * (delta * delta.z);
+                    float3 dx = delta * delta.x;        // xx xy xz
+                    float3 dy = delta.yzx * delta.y;    // yy yz yx
+                    float3 dz = delta * delta.z;        // zx zy zz
+                    acc0 += weight * float4(dx, dy.z);
+                    acc1 += weight * float4(dy.xy, dz.xy);
+                    acc2 += weight * dz.z;
                 }
             }
         }
 
-        covariance[0] = invWeightSum * covariance[0];
-        covariance[1] = invWeightSum * covariance[1];
-        covariance[2] = invWeightSum * covariance[2];
+        float4 c0 = invWeightSum * acc0;
+        float4 c1 = invWeightSum * acc1;
+        float c2 = invWeightSum * acc2;
+        float3x3 covariance = float3x3(c0.x, c0.y, c0.z,
+                                       c0.w, c1.x, c1.y,
+                                       c1.z, c1.w, c2);
 
         float3x3 eigenVectors;
         EigenSymmetric3x3(covariance, eigenVectors);

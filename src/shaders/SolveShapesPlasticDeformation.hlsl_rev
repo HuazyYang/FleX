@@ -23,16 +23,28 @@ groupshared float gCreep;
 groupshared float3 gReduce[64];
 groupshared float4 gRotation;
 
+// The accumulations below are deliberately written as flat left-to-right chains
+// rather than the more readable grouped form. FXC contracts each "+ product" into
+// a mad, so the parenthesisation decides where the intermediate roundings fall;
+// grouping the cross-product terms yields a balanced tree that is a valid
+// quaternion product but not the shipped one, and the difference is visible in
+// rigid-pile scenes within a single frame.
 float4 QuatMul(float4 a, float4 b) {
-    float x = a.w * b.x + b.w * a.x + (a.y * b.z - a.z * b.y);
-    float y = a.w * b.y + b.w * a.y + (a.z * b.x - a.x * b.z);
-    float z = a.w * b.z + b.w * a.z + (a.x * b.y - a.y * b.x);
-    float w = a.w * b.w - (a.x * b.x + a.y * b.y + a.z * b.z);
+    float x = b.w * a.x + a.w * b.x + a.y * b.z - a.z * b.y;
+    float y = b.w * a.y + a.w * b.y + a.z * b.x - a.x * b.z;
+    float z = b.w * a.z + a.w * b.z + a.x * b.y - a.y * b.x;
+    float w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
     return float4(x, y, z, w);
 }
 
 float4 NormalizeQuat(float4 q) {
-    float lengthSq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    // Written as a mul/add/mad chain rather than dot(q, q): the shipped code
+    // squares x and y with one vector mul and folds only z and w into mads, so a
+    // dp4 here would round differently.
+    float2 sq = q.xy * q.xy;
+    float lengthSq = sq.y + sq.x;
+    lengthSq = q.z * q.z + lengthSq;
+    lengthSq = q.w * q.w + lengthSq;
     float4 result;
     [branch] if (lengthSq > 0.0)
         result = q * (1.0 / sqrt(lengthSq));

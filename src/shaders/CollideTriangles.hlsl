@@ -36,12 +36,23 @@ RWStructuredBuffer<float4> collisionVelocities : register(u2);
 groupshared int triangleShapeCandidates[BLOCK_DIM_X * MAX_TRIANGLE_SHAPES];
 groupshared int stackOverflow[BLOCK_DIM_X][BVH_OVERFLOW_SIZE];
 
+// FXC compiles cross() to one three-wide mul plus one three-wide mad, fusing the
+// same factor in every lane. The shipped DXBC computes the components
+// separately, which fuses a different product per lane and so rounds differently.
+float3 CrossExplicit(float3 a, float3 b) {
+    float3 r;
+    r.x = a.y * b.z - a.z * b.y;
+    r.y = a.z * b.x - a.x * b.z;
+    r.z = a.x * b.y - a.y * b.x;
+    return r;
+}
+
 float3 Rotate(float4 q, float3 v) {
-    return v * (2.0f * q.w * q.w - 1.0f) + cross(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
+    return v * (2.0f * q.w * q.w - 1.0f) + CrossExplicit(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
 }
 
 float3 RotateInv(float4 q, float3 v) {
-    return v * (2.0f * q.w * q.w - 1.0f) - cross(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
+    return v * (2.0f * q.w * q.w - 1.0f) - CrossExplicit(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
 }
 
 float4 NormalizeQuat(float4 q) {
@@ -102,10 +113,14 @@ bool SegmentIntersectsTriangle(float3 start, float3 end, float3 a, float3 b, flo
     float3 av = a - start;
     float3 bv = b - start;
     float3 cv = c - start;
-    float3 n0 = cross(cv, d);
+    // cross(d, cv), not cross(cv, d): the DXBC puts the segment delta first.
+    // Reversed, s0 and s1 invert while s2 does not, so the three signed volumes
+    // no longer share a sign and the test can never fire -- tunneling contacts
+    // are then silently dropped.
+    float3 n0 = CrossExplicit(d, cv);
     bool s0 = dot(bv, n0) >= 0.0f;
     bool s1 = -dot(av, n0) >= 0.0f;
-    float3 n1 = cross(d, bv);
+    float3 n1 = CrossExplicit(d, bv);
     bool s2 = dot(n1, av) >= 0.0f;
     return s0 && s1 && s2;
 }
@@ -262,7 +277,7 @@ void CollideTriangleMesh(
                 float3 vc = triangleVerticesArray[i2].xyz * geometry.xyz;
                 float3 ab = vb - va;
                 float3 ac = vc - va;
-                float3 normal = normalize(cross(ab, ac));
+                float3 normal = normalize(CrossExplicit(ab, ac));
                 float planeW = dot(va, normal);
                 float startDist = dot(localStart, normal) - planeW;
                 float endDist = dot(localEnd, normal) - planeW;

@@ -49,12 +49,23 @@ RWStructuredBuffer<int> collisionCounts : register(u0);
 RWStructuredBuffer<float4> collisionPlanes : register(u1);
 RWStructuredBuffer<float4> collisionVelocities : register(u2);
 
+// FXC compiles cross() to one three-wide mul plus one three-wide mad, fusing the
+// same factor in every lane. The shipped DXBC computes the components
+// separately, which fuses a different product per lane and so rounds differently.
+float3 CrossExplicit(float3 a, float3 b) {
+    float3 r;
+    r.x = a.y * b.z - a.z * b.y;
+    r.y = a.z * b.x - a.x * b.z;
+    r.z = a.x * b.y - a.y * b.x;
+    return r;
+}
+
 float3 Rotate(float4 q, float3 v) {
-    return v * (2.0f * q.w * q.w - 1.0f) + cross(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
+    return v * (2.0f * q.w * q.w - 1.0f) + CrossExplicit(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
 }
 
 float3 RotateInv(float4 q, float3 v) {
-    return v * (2.0f * q.w * q.w - 1.0f) - cross(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
+    return v * (2.0f * q.w * q.w - 1.0f) - CrossExplicit(q.xyz, v) * q.w * 2.0f + q.xyz * dot(q.xyz, v) * 2.0f;
 }
 
 float4 NormalizeQuat(float4 q) {
@@ -167,21 +178,21 @@ bool CapsuleContact(
     out float3 normal,
     out float planeW) {
 
-    float axisX = (localEnd.x > halfHeight)
+    float axisX = (localStart.x > halfHeight)
                 ? halfHeight
-                : ((localEnd.x < -halfHeight) ? -halfHeight : localEnd.x);
+                : ((localStart.x < -halfHeight) ? -halfHeight : localStart.x);
     float3 axisPoint = float3(axisX, 0.0f, 0.0f);
-    float3 delta = localEnd - axisPoint;
+    float3 delta = localStart - axisPoint;
     float distSq = dot(delta, delta);
     float radialDistance = sqrt(distSq) - radius - gParams.kCollisionDistance;
 
-    // Closest point between the particle sweep (localEnd -> localStart) and the
+    // Closest point between the particle sweep (localStart -> localEnd) and the
     // capsule axis segment, expanded by the radius along x.
     float axisLower = -radius - halfHeight;
     float axisUpper = radius + halfHeight;
-    float3 seg = localStart - localEnd;
+    float3 seg = localEnd - localStart;
     float extent = axisUpper - axisLower;
-    float3 offset = localEnd - float3(axisLower, 0.0f, 0.0f);
+    float3 offset = localStart - float3(axisLower, 0.0f, 0.0f);
 
     float segLengthSq = dot(seg, seg);
     float segDotOffset = dot(seg, offset);
@@ -204,7 +215,7 @@ bool CapsuleContact(
         axisParam = 0.0f;
     }
 
-    float3 closestOnSeg = seg * segParam + localEnd;
+    float3 closestOnSeg = seg * segParam + localStart;
     float3 closestOnAxis = float3(extent * axisParam + axisLower, 0.0f, 0.0f);
     float3 separation = closestOnSeg - closestOnAxis;
 
@@ -229,11 +240,13 @@ bool BoxContact(
     float3 expanded = halfExtents + gParams.kCollisionDistance;
     expanded = expanded + gParams.kCollisionThreshold;
 
-    if (!IntersectSegmentAabb(localEnd, localStart, expanded))
+    // The DXBC bases the sweep at localStart and marches toward localEnd; the
+    // reversed parametrisation is the same segment but mirrors t.
+    if (!IntersectSegmentAabb(localStart, localEnd, expanded))
         return false;
 
-    float3 toMax = localEnd - expanded;
-    float3 toMin = localEnd + expanded;
+    float3 toMax = localStart - expanded;
+    float3 toMin = localStart + expanded;
 
     float best = 3.402823466e+38f;
     float4 plane = float4(1.0f, 0.0f, 0.0f, -halfExtents.x);
@@ -264,7 +277,7 @@ bool ConvexContact(
 
     FlexConvexMeshDevice convex = convexes[meshId - 1];
     int planeBegin = convex.mPlaneOffset;
-    float3 segment = localStart - localEnd;
+    float3 segment = localEnd - localStart;
     int planeEnd = planeBegin + convex.mPlaneCount;
     float3 invScale = 1.0f / scale;
 
@@ -279,9 +292,15 @@ bool ConvexContact(
         float3 n = invScale * p.xyz;
         float invLength = 1.0f / sqrt(dot(n, n));
         n = n * invLength;
-        float w = invLength * p.w - gParams.kCollisionDistance - gParams.kCollisionThreshold;
+        // The DXBC keeps the unadjusted offset for the stored plane and uses the
+        // margin-adjusted one only for the ray clip, so both are needed.
+        float wRaw = invLength * p.w;
+        float w = wRaw - gParams.kCollisionDistance - gParams.kCollisionThreshold;
 
-        float distance = dot(float4(n, w), float4(localEnd, 1.0f));
+        // Measured at localStart, the ray origin: this is what picks the
+        // "closest" plane, so basing it at the other endpoint selects a
+        // different plane whenever the particle has moved.
+        float distance = dot(float4(n, w), float4(localStart, 1.0f));
         float denom = dot(n, segment);
 
         if (denom != 0.0f) {
@@ -303,7 +322,7 @@ bool ConvexContact(
         if (abs(distance) < closest) {
             closest = abs(distance);
             normal = n;
-            planeW = w;
+            planeW = wRaw;
         }
     }
 

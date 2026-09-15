@@ -50,8 +50,10 @@ void SolveInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV_Gro
         prevPos2 -= prevPos1;
         prevPos3 -= prevPos1;
 
-        float3 n = prevPos2.yzx * prevPos3.zxy - prevPos2.zxy * prevPos3.yzx;
-
+        float3 n;
+        n.x = prevPos2.y * prevPos3.z - prevPos2.z * prevPos3.y;
+        n.y = prevPos2.z * prevPos3.x - prevPos2.x * prevPos3.z;
+        n.z = prevPos2.x * prevPos3.y - prevPos2.y * prevPos3.x;
         float3 Dx = -lambda * n;
         float DxMag2 = dot(Dx, Dx);
         float3 invDxMag = rsqrt(DxMag2);
