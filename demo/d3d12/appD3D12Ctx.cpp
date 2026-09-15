@@ -123,12 +123,17 @@ AppGraphCtx* AppGraphCtxCreateD3D12(int deviceID)
 	{
 		pAdapterTemp->GetDesc1(&adapterDesc);
 
-		context->m_dedicatedVideoMemory = (size_t)adapterDesc.DedicatedVideoMemory;
+		// Enumerate to the end rather than breaking on the match, so that the
+		// listing is complete and --adapter=N can be chosen from it.
+		printf("  adapter %d: %ls (vendor 0x%04X, %u MB dedicated)%s\n",
+			adapterIdx, adapterDesc.Description, adapterDesc.VendorId,
+			(unsigned)((size_t)adapterDesc.DedicatedVideoMemory >> 20),
+			(deviceID == adapterIdx) ? "   <= selected" : "");
 
 		if (deviceID == adapterIdx)
 		{
+			context->m_dedicatedVideoMemory = (size_t)adapterDesc.DedicatedVideoMemory;
 			pAdapter = pAdapterTemp;
-			break;
 		}
 		else
 		{
@@ -136,6 +141,12 @@ AppGraphCtx* AppGraphCtxCreateD3D12(int deviceID)
 		}
 		adapterIdx++;
 	}
+
+	if (pAdapter == NULL)
+	{
+		printf("  WARNING: adapter %d does not exist, falling back to the default adapter\n", deviceID);
+	}
+	fflush(stdout);
 
 	// create device
 	if (hr = D3D12CreateDevice(pAdapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&context->m_device))

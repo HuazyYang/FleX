@@ -184,7 +184,7 @@ bool DemoContextD3D11::initialize(const RenderInitOptions& options)
 	// must always have at least one sample
 	m_msaaSamples = Max(1, options.numMsaaSamples);
 	// create app graph context
-	m_appGraphCtx = AppGraphCtxCreate(0);
+	m_appGraphCtx = AppGraphCtxCreate(options.adapterIndex);
 	m_appGraphCtxD3D11 = cast_to_AppGraphCtxD3D11(m_appGraphCtx);
 
 	AppGraphCtxUpdateSize(m_appGraphCtx, options.window, options.fullscreen, m_msaaSamples);

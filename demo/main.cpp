@@ -125,6 +125,10 @@ int g_numSubsteps;
 
 // a setting of -1 means Flex will use the device specified in the NVIDIA control panel
 int g_device = -1;
+// DXGI adapter ordinal the renderer is created on. Flex has no adapter selection of
+// its own -- it is always handed the render device -- so this is what decides which
+// physical GPU the solver runs on. 0 preserves the historical hardcoded behaviour.
+int g_adapter = 0;
 char g_deviceName[256];
 bool g_vsync = true;
 
@@ -575,10 +579,41 @@ struct PlaybackContext {
         Write = 2
     };
     
+    // Archive layout. Legacy captures have no magic and carry positions only;
+    // 'FPB2' captures additionally carry the smoothed positions and the three
+    // anisotropy buffers, so SmoothPositions/CalculateAnisotropy become
+    // observable to a differential test. Offline readers dispatch on the magic.
+    static const uint32_t kMagicV2 = 0x32425046u; // 'FPB2' little-endian
+
+    // Channels recorded per frame, in archive order. Everything is Vec4 and is
+    // clamped to the live particle count: smoothPositions and anisotropy1..3 are
+    // allocated at maxParticles, so their tails are uninitialised.
+    enum Channel {
+        ChPositions = 0,
+        ChSmoothPositions,
+        ChAnisotropy1,
+        ChAnisotropy2,
+        ChAnisotropy3,
+        ChCount
+    };
+
     Mode writeMode;
     uint32_t frameStart, frameEnd;
     uint32_t frameIndex;
     FILE* archiveStream;
+    bool archiveIsV2;
+    // Diagnostic contact recording. Positions only show the *effect* of a
+    // contact; these show whether two builds generate the same contacts at all,
+    // which separates a discrete contact-generation difference from rounding.
+    bool wantContacts;
+    bool recordThisFrame;
+    bool dumpedShapeTypes;
+    // Snapshot of the particle velocities taken while the buffers are mapped,
+    // so recordContacts() (which runs after unmap) can write them out. Contacts
+    // depend on the predicted position, hence on velocity, so a contact
+    // difference with identical positions has to be checked against these.
+    std::vector<Vec3> velocitiesSnapshot;
+    FILE* contactStream;
     std::vector<Vec4> positionsBak;
 
     PlaybackContext()
@@ -586,10 +621,42 @@ struct PlaybackContext {
           frameStart{},
           frameEnd{},
           archiveStream{},
+          archiveIsV2{},
+          wantContacts{},
+          recordThisFrame{},
+          dumpedShapeTypes{},
+          contactStream{},
           positionsBak{} {}
+
+    bool active() const { return writeMode != None; }
+
+    void setWantContacts(bool v) { wantContacts = v; }
 
     void setMode(Mode mode) {
         writeMode = mode;
+    }
+
+    static const char* channelName(int ch) {
+        switch (ch) {
+        case ChPositions:       return "positions";
+        case ChSmoothPositions: return "smoothPositions";
+        case ChAnisotropy1:     return "anisotropy1";
+        case ChAnisotropy2:     return "anisotropy2";
+        case ChAnisotropy3:     return "anisotropy3";
+        default:                return "?";
+        }
+    }
+
+    // Live particle count governs every channel; the wider buffers are clamped.
+    const Vec4* channelData(int ch) const {
+        switch (ch) {
+        case ChPositions:       return &g_buffers->positions[0];
+        case ChSmoothPositions: return &g_buffers->smoothPositions[0];
+        case ChAnisotropy1:     return &g_buffers->anisotropy1[0];
+        case ChAnisotropy2:     return &g_buffers->anisotropy2[0];
+        case ChAnisotropy3:     return &g_buffers->anisotropy3[0];
+        default:                return nullptr;
+        }
     }
 
     void setFrameRange(uint32_t start, uint32_t end) {
@@ -615,11 +682,31 @@ struct PlaybackContext {
             assert(archiveStream);
 
             if(writeMode == Read) {
+                uint32_t magic = 0;
+                fread(&magic, sizeof(uint32_t), 1, archiveStream);
+                archiveIsV2 = (magic == kMagicV2);
+                if (!archiveIsV2) {
+                    // Legacy positions-only capture: the word we just consumed
+                    // was frameStart, so rewind and read the header as before.
+                    fseek(archiveStream, 0, SEEK_SET);
+                    printf("[Playback] legacy archive (positions only)\n");
+                }
                 fread(&frameStart, sizeof(uint32_t), 1, archiveStream);
                 fread(&frameEnd, sizeof(uint32_t), 1, archiveStream);
             } else {
+                archiveIsV2 = true;
+                uint32_t magic = kMagicV2;
+                fwrite(&magic, sizeof(uint32_t), 1, archiveStream);
                 fwrite(&frameStart, sizeof(uint32_t), 1, archiveStream);
                 fwrite(&frameEnd, sizeof(uint32_t), 1, archiveStream);
+            }
+
+            if (wantContacts && writeMode == Write) {
+
+                char cname[_MAX_PATH];
+                snprintf(cname, _countof(cname), "%s_contacts",
+                         g_scenes[g_scene]->GetName());
+                contactStream = fopen(cname, "wb");
             }
         }
     }
@@ -630,59 +717,100 @@ struct PlaybackContext {
 
         uint32_t frameIndex = this->frameIndex++;
 
+        recordThisFrame = false;
         if (frameIndex == -1 || frameIndex < frameStart)
             return;
         else if(frameIndex >= frameEnd) {
             terminate();
             return;
         }
+        recordThisFrame = true;
+
+        if (wantContacts && !dumpedShapeTypes) {
+            dumpedShapeTypes = true;
+            // Maps a contact's shape index back to the contact function that
+            // produced it. Must run while the buffers are mapped.
+            for (int i = 0; i < int(g_buffers->shapeFlags.size()); ++i)
+                printf("[Shape] %d type=%d\n", i,
+                       g_buffers->shapeFlags[i] & eNvFlexShapeFlagTypeMask);
+            fflush(stdout);
+        }
+
+        if (wantContacts) {
+            const int nv = g_buffers->velocities.size();
+            velocitiesSnapshot.resize(nv);
+            for (int i = 0; i < nv; ++i)
+                velocitiesSnapshot[i] = g_buffers->velocities[i];
+        }
 
         if (archiveStream) {
+            // A legacy archive carries positions only; a V2 archive carries
+            // every channel. Writing always produces V2.
+            const int numChannels = archiveIsV2 ? int(ChCount) : 1;
+
             if(writeMode == Write) {
                 uint32_t numParticles = g_buffers->positions.size();
-                fwrite(&numParticles, sizeof(uint32_t), 1, archiveStream);
-                fwrite(&g_buffers->positions[0], sizeof(Vec4), numParticles, archiveStream);
+                for (int ch = 0; ch < numChannels; ++ch) {
+                    fwrite(&numParticles, sizeof(uint32_t), 1, archiveStream);
+                    fwrite(channelData(ch), sizeof(Vec4), numParticles, archiveStream);
+                }
             } else {
                 uint32_t numParticles = g_buffers->positions.size();
-                uint32_t numParticlesBak;
-                fread(&numParticlesBak, sizeof(uint32_t), 1, archiveStream);
-                positionsBak.resize(numParticlesBak);
-                fread(positionsBak.data(), sizeof(Vec4), numParticlesBak, archiveStream);
+                bool coincident = true;
 
-                if(numParticles != numParticlesBak) {
-                    printf(
-                        "[Playback][Frame %u] particle number mis-coincident: current "
-                        "(%u), expect(%u)\n",
-                        frameIndex, numParticles, numParticlesBak);
-                } else {
-                    bool coincident = true;
+                for (int ch = 0; ch < numChannels && coincident; ++ch) {
+                    uint32_t numParticlesBak;
+                    fread(&numParticlesBak, sizeof(uint32_t), 1, archiveStream);
+                    positionsBak.resize(numParticlesBak);
+                    fread(positionsBak.data(), sizeof(Vec4), numParticlesBak, archiveStream);
+
+                    if(numParticles != numParticlesBak) {
+                        printf(
+                            "[Playback][Frame %u] %s number mis-coincident: current "
+                            "(%u), expect(%u)\n",
+                            frameIndex, channelName(ch), numParticles, numParticlesBak);
+                        coincident = false;
+                        break;
+                    }
+
+                    const Vec4* cur = channelData(ch);
                     for(uint32_t i = 0; i < numParticles; ++i) {
-                        auto &pos0 = g_buffers->positions[i];
+                        auto &pos0 = cur[i];
                         auto &pos1 = positionsBak[i];
                         constexpr float eps = 1e-3f;
                         if(!(std::abs(pos0.x - pos1.x) < eps && std::abs(pos0.y - pos1.y) < eps && std::abs(pos0.z - pos1.z) < eps
                         && std::abs(pos0.w - pos1.w) < eps)) {
                             printf(
-                                "[Playback][Frame %u] particle %u current=(%.9g, %.9g, %.9g, %.9g) "
+                                "[Playback][Frame %u] %s %u current=(%.9g, %.9g, %.9g, %.9g) "
                                 "expect=(%.9g, %.9g, %.9g, %.9g)\n",
-                                frameIndex, i, pos0.x, pos0.y, pos0.z, pos0.w,
+                                frameIndex, channelName(ch), i, pos0.x, pos0.y, pos0.z, pos0.w,
                                 pos1.x, pos1.y, pos1.z, pos1.w);
                             coincident = false;
                             break;
                         }
                     }
-
-                    if(!coincident)
-                        printf("[Playback][Frame %u] particle buffer mis-coincident\n", frameIndex);
                 }
+
+                if(!coincident)
+                    printf("[Playback][Frame %u] particle buffer mis-coincident\n", frameIndex);
             }
         }
     }
+
+    // Called after the solver's readbacks are queued. Contacts are the direct
+    // output of CollideShapes/CollideTriangles, so comparing them separates
+    // "generated a different contact" from "same contacts, different rounding".
+    void recordContacts();
 
 private:
     void terminate() {
         if (writeMode == None)
             return;
+
+        if (contactStream) {
+            fclose(contactStream);
+            contactStream = nullptr;
+        }
 
         if (archiveStream) {
             fclose(archiveStream);
@@ -693,6 +821,46 @@ private:
     }
 
 } g_playbackCtx;
+
+void PlaybackContext::recordContacts() {
+    if (!contactStream || !recordThisFrame)
+        return;
+
+    const int maxContactsPerParticle = 6;
+    const int n = g_buffers->positions.size();
+
+    NvFlexVector<Vec4> planes(g_flexLib, n * maxContactsPerParticle);
+    NvFlexVector<Vec4> velocities(g_flexLib, n * maxContactsPerParticle);
+    NvFlexVector<int> indices(g_flexLib, n);
+    NvFlexVector<unsigned int> counts(g_flexLib, n);
+
+    NvFlexGetContacts(g_solver, planes.buffer, velocities.buffer, indices.buffer,
+                      counts.buffer);
+
+    // Mapping waits for the copies to land.
+    planes.map();
+    velocities.map();
+    indices.map();
+    counts.map();
+
+    uint32_t num = uint32_t(n);
+    fwrite(&num, sizeof(uint32_t), 1, contactStream);
+    // counts are indexed through the contact-index indirection, so store both
+    fwrite(&indices[0], sizeof(int), n, contactStream);
+    fwrite(&counts[0], sizeof(unsigned int), n, contactStream);
+    fwrite(&planes[0], sizeof(Vec4), n * maxContactsPerParticle, contactStream);
+    // .w carries the shape index, which identifies which shape produced the contact
+    fwrite(&velocities[0], sizeof(Vec4), n * maxContactsPerParticle, contactStream);
+    uint32_t nv = uint32_t(velocitiesSnapshot.size());
+    fwrite(&nv, sizeof(uint32_t), 1, contactStream);
+    if (nv)
+        fwrite(&velocitiesSnapshot[0], sizeof(Vec3), nv, contactStream);
+
+    planes.unmap();
+    velocities.unmap();
+    indices.unmap();
+    counts.unmap();
+}
 
 void Init(int scene, bool centerCamera = true)
 {
@@ -2329,6 +2497,18 @@ void UpdateFrame()
 	NvFlexGetVelocities(g_solver, g_buffers->velocities.buffer, NULL);
 	NvFlexGetNormals(g_solver, g_buffers->normals.buffer, NULL);
 
+	// The playback harness records the smoothed positions and anisotropy, which
+	// are otherwise only fetched for ellipsoid rendering without interop. Fetch
+	// them unconditionally while recording so SmoothPositions/CalculateAnisotropy
+	// are observable independently of the render path.
+	if (g_playbackCtx.active() && !(!g_interop && g_drawEllipsoids))
+	{
+		NvFlexGetSmoothParticles(g_solver, g_buffers->smoothPositions.buffer, NULL);
+		NvFlexGetAnisotropy(g_solver, g_buffers->anisotropy1.buffer, g_buffers->anisotropy2.buffer, g_buffers->anisotropy3.buffer, NULL);
+	}
+
+	g_playbackCtx.recordContacts();
+
 	// readback triangle normals
 	if (g_buffers->triangles.size())
 		NvFlexGetDynamicTriangles(g_solver, g_buffers->triangles.buffer, g_buffers->triangleNormals.buffer, g_buffers->triangles.size() / 3);
@@ -2930,6 +3110,7 @@ static void parseArgs(int argc, char* argv[], Options *opts) {
     static const cag_option options[] = {
         {'R', NULL, "dev", "BOOL", "Run Flex reversed backend"},
         {'D', NULL, "device", "IDX", "Device index"},
+        {'a', NULL, "adapter", "IDX", "DXGI adapter ordinal to run render+Flex on (default 0)"},
         {'E', NULL, "extensions", "BOOL", "Enable Flex extensions"},
         {'B', NULL, "benchmark", NULL, "Enable benchmark mode"},
         {'W', NULL, "d3d12", NULL, "Use D3D12 compute backend"},
@@ -2947,6 +3128,7 @@ static void parseArgs(int argc, char* argv[], Options *opts) {
         {'S', NULL, "scene", "Scene Name", "Initial scene name"},
         {'Y', NULL, "playback-mode", "MODE", "Playback mode: none, read, write"},
         {'Z', NULL, "playback-range", "start,end", "Playback record physical frame range" },
+        {'Q', NULL, "playback-contacts", NULL, "Also record contact planes/counts while writing"},
         {'h', "h", "help", NULL, "Usage"}};
 
     cag_option_context context;
@@ -2974,6 +3156,10 @@ static void parseArgs(int argc, char* argv[], Options *opts) {
 
             case 'D':
                 g_device = atoi(value);
+                break;
+
+            case 'a':
+                g_adapter = atoi(value);
                 break;
 
             case 'E':
@@ -3063,6 +3249,10 @@ static void parseArgs(int argc, char* argv[], Options *opts) {
 
             case 'S':
                 opts->sceneName = value;
+                break;
+
+            case 'Q':
+                g_playbackCtx.setWantContacts(true);
                 break;
 
             case 'Y':
@@ -3279,9 +3469,41 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(softArmadilloSceneNew);
 	g_scenes.push_back(softBunnySceneNew);
 
+	// Coverage scenes for the shape-matching kernel variants. Solver::SolveShapes
+	// picks between the 32 / base / 128 forms on avgWorkload = rigidIndices/rigids,
+	// and the stock plastic scenes all sit in the <=32 bucket, so the base and 128
+	// plastic kernels would otherwise never be dispatched by any scene.
+	SoftBody::Instance plasticCoarse("../../data/bunny.ply");
+	plasticCoarse.mScale = Vec3(20.0f);
+	plasticCoarse.mClusterSpacing = 3.0f;
+	plasticCoarse.mClusterRadius = 0.0f;
+	plasticCoarse.mClusterStiffness = 0.0f;
+	plasticCoarse.mGlobalStiffness = 1.0f;
+	plasticCoarse.mClusterPlasticThreshold = 0.0015f;
+	plasticCoarse.mClusterPlasticCreep = 0.15f;
+	plasticCoarse.mTranslation[1] = 5.0f;
+	SoftBody* plasticCoarseScene = new SoftBody("Plastic Coarse");
+	plasticCoarseScene->mPlinth = true;
+	plasticCoarseScene->AddInstance(plasticCoarse);
+
+	SoftBody::Instance plasticVeryCoarse("../../data/bunny.ply");
+	plasticVeryCoarse.mScale = Vec3(20.0f);
+	plasticVeryCoarse.mClusterSpacing = 8.0f;
+	plasticVeryCoarse.mClusterRadius = 0.0f;
+	plasticVeryCoarse.mClusterStiffness = 0.0f;
+	plasticVeryCoarse.mGlobalStiffness = 1.0f;
+	plasticVeryCoarse.mClusterPlasticThreshold = 0.0015f;
+	plasticVeryCoarse.mClusterPlasticCreep = 0.15f;
+	plasticVeryCoarse.mTranslation[1] = 5.0f;
+	SoftBody* plasticVeryCoarseScene = new SoftBody("Plastic Very Coarse");
+	plasticVeryCoarseScene->mPlinth = true;
+	plasticVeryCoarseScene->AddInstance(plasticVeryCoarse);
+
 	g_scenes.push_back(plasticBunniesSceneNew);
 	g_scenes.push_back(plasticComparisonScene);
 	g_scenes.push_back(plasticStackScene);
+	g_scenes.push_back(plasticCoarseScene);
+	g_scenes.push_back(plasticVeryCoarseScene);
 
 	// collision scenes
 	g_scenes.push_back(new FrictionRamp("Friction Ramp"));
@@ -3363,6 +3585,7 @@ int main(int argc, char* argv[])
 
 	// init graphics
 	RenderInitOptions options;
+	options.adapterIndex = g_adapter;
 
 #ifndef ANDROID
 	DemoContext* demoContext = nullptr;

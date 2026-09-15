@@ -48,12 +48,14 @@ struct RenderInitOptions
 		asyncComputeBenchmark(false),
 		fullscreen(false),
 		numMsaaSamples(1),
+		adapterIndex(0),
 		window(nullptr)
 	{}
 	int defaultFontHeight;					///< Set to -1 for the default
 	bool asyncComputeBenchmark;				///< When set, will configure renderer to perform extra (unnecessary) rendering work to make sure async compute can take place.  
 	bool fullscreen;
 	int numMsaaSamples;
+	int adapterIndex;						///< DXGI adapter ordinal to render (and, via interop, simulate) on
 	SDL_Window* window;
 };
 

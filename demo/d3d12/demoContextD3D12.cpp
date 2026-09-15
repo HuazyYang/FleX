@@ -136,7 +136,7 @@ bool DemoContextD3D12::initialize(const RenderInitOptions& options)
 		loadModules(APP_CONTEXT_D3D12);
 	}
 
-	m_appGraphCtx = AppGraphCtxCreate(0);
+	m_appGraphCtx = AppGraphCtxCreate(options.adapterIndex);
 	m_renderContext = cast_to_AppGraphCtxD3D12(m_appGraphCtx);
 
 	AppGraphCtxUpdateSize(m_appGraphCtx, options.window, options.fullscreen, m_msaaSamples);
