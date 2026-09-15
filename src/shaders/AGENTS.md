@@ -118,7 +118,7 @@ authority for reverse-recovery work.
     as separate scalar ones.
   - **Basis-axis `cross()`.** 10.1 will not fold `cross(q.xyz, float3(1,0,0))`
     down to one masked `mul`. Supply the folded cross and dot to a `RotateBasis`
-    helper (see `TransformShapeBounds.hlsl_rev`, `SolveShapes.hlsl_rev`) and the
+    helper (see `TransformShapeBounds.hlsl`, `SolveShapes.hlsl_rev`) and the
     single instruction comes back.
   - **Gate shape.** An `a && b && c` chain compiles to `and`s feeding one
     `if_nz`; the DXBC's nested `if_nz` gates need nested `if` statements in the
@@ -150,11 +150,12 @@ authority for reverse-recovery work.
 
 - Use `.hlsl_rev` while a hand-recovered source is still being reconciled with
   its DXBC. Once its group reaches `Exact` or `Verified` in the status table
-  below, rename it to `.hlsl` and update its `Shaders.cfg` line, its
-  `src/Library.cpp` generated-header include, and its table row in the same
-  change; the suffix marks work in progress, not provenance. A group that is
-  still `Equivalent` keeps `.hlsl_rev` until runtime verification clears it.
-  Every `.hlsl_rev` file in this folder is listed in `Shaders.cfg`.
+  below, rename it to `.hlsl` and update its `Shaders.cfg` line (keep the flag
+  column at 52), its `src/Library.cpp` generated-header include, and its table
+  row in the same change; the suffix marks work in progress, not provenance. A
+  group that is still `Equivalent` keeps `.hlsl_rev` until runtime verification
+  clears it — `Equivalent` is not a passing grade, it is the absence of a
+  finding. Every `.hlsl_rev` file in this folder is listed in `Shaders.cfg`.
 
 - Entry-point names must match the shader group name without the `g_Flex_` or
   `g_bvh_` prefix. Wrapper variants such as `SolveShapes32NV.hlsl_rev` may
@@ -193,10 +194,13 @@ For `.hlsl_rev` groups the status now records the result of an FXC round trip
 - `Exact` — the recovered source recompiles to disassembly identical to the
   shipped `.asm` once the binding/`dcl_*` declarations and the trailing
   instruction-count comment are removed.
-- `Verified` — not byte-identical, but the structural audit below passes on all
-  five axes *and* the opcode histogram matches exactly. Every remaining
-  difference is register naming, in-block scheduling, or the operand order of a
-  commutative instruction. Accepted as trustworthy without a runtime check.
+- `Verified` — not byte-identical, but trustworthy. Reached one of two ways.
+  Either a runtime differential test showed bit-identical output against the
+  shipped blob on scenes with a zero noise floor (the strong form, and the only
+  one that has ever caught a bug), or the structural audit passed on all five
+  axes *and* the opcode histogram matched exactly *and* the constant-bit sweep
+  came back clean, leaving nothing that could carry a semantic difference. The
+  status table marks which; see the summary above.
 - `Equivalent` — control flow, `dcl_*` bindings, constant-buffer fields and
   memory effects are identical, and every remaining arithmetic difference has
   been individually accounted for as an FXC 6.3 vs 10.1 artifact (register
@@ -207,6 +211,11 @@ For `.hlsl_rev` groups the status now records the result of an FXC round trip
   groups are **pending runtime verification**: the structural audit rules out
   every divergence that changes control flow, memory effects or bindings, but it
   is not a proof, and one mislabelled group (see below) shows why that matters.
+- `Divergent` — a runtime differential test (see Runtime verification below)
+  shows the recompiled bytecode producing different output from the shipped
+  blob, with a signature that rules out floating-point rounding. The recovery is
+  wrong somewhere and the group is back to being work in progress. No group
+  currently carries this status; three did, and all three are fixed.
 - `Partial` — some instruction blocks still differ in substance; the divergence
   is named in the notes under the table.
 
@@ -215,76 +224,88 @@ three statuses. Only the BVH and radix-sort groups are still marked `Complete`,
 meaning reviewed against the DXBC but not round-tripped here.
 
 Summary: 84 DXBC shader groups, of which 67 have been round-tripped — 38
-recompile exactly, 6 are `Verified`, and 23 are `Equivalent` and awaiting
-runtime verification. No group is `Partial` any more; the remaining 17 (BVH,
-radix sort) stay `Complete`.
+recompile exactly, 13 are `Verified` and 16 are `Equivalent`. Nothing is
+`Divergent`. The remaining 17 (BVH, radix sort) stay `Complete`.
 
-Eighteen hand-recovered groups have reached `Exact` or `Verified` and been
-renamed from `.hlsl_rev` to `.hlsl`, leaving 15 `.hlsl_rev` sources, all
-`Equivalent`.
+Both rounds of verification are finished. The structural audit came first and
+the runtime differential test second, and the second round is what earned the
+trust — of the 23 groups the audit had passed as `Equivalent`, **three were
+wrong**, and none of the three could have been caught by reading disassembly:
 
-The six `Verified` groups are `g_Flex_ContinuousShockPropagation`,
-`g_Flex_CreateGrid`, `g_Flex_Predict`, `g_Flex_SolveSprings`,
-`g_Flex_SolveSpringsNV` and `g_Flex_UpdateDiffuseParticles`. Their entire
-residual is:
+- `CollideTriangles` — `cross(cv, d)` where the DXBC has `cross(d, cv)`, which
+  silently disabled the tunneling test;
+- `CollideShapes` — the contact sweep based at `localEnd` instead of
+  `localStart`, plus a convex plane offset stored margin-adjusted;
+- `CalculateAnisotropy` — a Jacobi convergence threshold of `1e-9` where the
+  shipped blob has `1e-15`, invisible because both print as `l(0.000000)`.
 
-- `CreateGrid`, `SolveSprings`, `SolveSpringsNV`, `UpdateDiffuseParticles` —
-  register naming only, plus one commutative `mul` order in
-  `UpdateDiffuseParticles`; identical after register normalisation.
-- `Predict` — one `rsq` scheduled two instructions later.
-- `ContinuousShockPropagation` — one `ld_raw` scheduled one instruction later
-  and one `add` with its operands the other way round.
+A later round, on an NVIDIA device, found a fourth in code the audit had also
+passed:
 
-Next round: runtime verification for the 23 `Equivalent` groups — run the
-shipped bytecode and the recompiled bytecode over identical inputs and compare
-the output buffers. Until that lands, treat `Equivalent` as "no structural
-divergence found", not as "known to agree".
+- the whole `SolveShapes` family — `QuatMul` written with the cross-product
+  terms parenthesised, which FXC lowers to a balanced accumulation tree where
+  the shipped blob is a flat left-to-right `mad` chain. Every term is correct
+  and the products are identical; only the order of the three additions differs.
+  On Rigid8 that moved 1886 of 192000 floats within frame 0, by up to 43 ulp,
+  growing to 1.9 world units by frame 59.
 
-The two groups that were `Partial` are no longer so. Both were control-flow
-*shape* differences, and both were fixed at the source level:
+Twenty-five hand-recovered groups have now reached `Exact` or `Verified` and
+carry the `.hlsl` suffix. Eight `.hlsl_rev` sources remain, all `Equivalent`:
+the `SolveShapes` and `SolveShapesPlasticDeformation` variants. See [What the
+remaining `.hlsl_rev` sources still
+owe](#what-the-remaining-hlsl_rev-sources-still-owe) for why none of them can be
+promoted yet.
 
-- `CollideShapes.hlsl_rev` — `SdfContact` no longer returns a hit flag for the
-  caller to gate on. The DXBC nests the contact store inside the gradient test,
-  so `SdfContact` takes the store parameters and calls `StoreContact` itself.
-  With that change every `if_nz` / `else` / `endif` / `switch` / `break` matches
-  one for one, and the only opcodes whose counts still differ are `mul` (66 vs
-  54), `mad` (63 vs 55) and `mov` (209 vs 50).
-- `CollideTriangles.hlsl_rev` — the three tests that gate collecting a triangle
-  shape are written as nested `if` statements again rather than one `&&` chain,
-  which restores the DXBC's three `if_nz` gates. Control flow now matches
-  exactly; `mul` (40 vs 32), `mad` (49 vs 41) and `mov` still differ.
+The thirteen `Verified` groups fall into two tiers, and the distinction matters
+when deciding how far to trust one:
+
+- **Runtime bit-identical** (7): `g_Flex_CalculateAnisotropy`,
+  `g_Flex_CollideParticles`, `g_Flex_CollideShapes`, `g_Flex_CollideTriangles`,
+  `g_Flex_SmoothPositions`, `g_Flex_TransformShapeBounds`,
+  `g_Flex_SolveVelocities`. All seven were swapped in together and produced
+  bit-identical positions, smoothed positions and anisotropy over 60 frames on
+  Rigid8, Shape Collision, Triangle Collision and Viscosity Med — four scenes
+  whose noise floor is exactly zero. The first six were then re-run **on a
+  second vendor**, an NVIDIA RTX 4050, alongside the eight `SolveShapes`
+  variants, and stayed bit-identical on Viscosity Med, Surface Tension Med,
+  Triangle Collision and Shape Collision over 60 frames. `SolveVelocities` was
+  additionally isolated on Rigid8, Melting and Plastic Coarse for 60 frames each
+  and was bit-identical in all five channels there too. This is the strongest
+  evidence available anywhere in this tree.
+- **Structural only** (6): `g_Flex_ContinuousShockPropagation`,
+  `g_Flex_CreateGrid`, `g_Flex_Predict`, `g_Flex_SolveSprings`,
+  `g_Flex_SolveSpringsNV`, `g_Flex_UpdateDiffuseParticles`. These passed all
+  five audit axes *and* an exact opcode histogram, so their entire residual is
+  register naming (`CreateGrid`, `SolveSprings`, `SolveSpringsNV`,
+  `UpdateDiffuseParticles`, plus one commutative `mul` order in the last), one
+  `rsq` scheduled two instructions later (`Predict`), or one `ld_raw` moved and
+  one `add` reversed (`ContinuousShockPropagation`). They were accepted without
+  a runtime check because nothing was left that could carry a semantic
+  difference — but note that `CalculateAnisotropy` also had an exact opcode
+  histogram and was still wrong, so this tier rests on the constant-bit sweep
+  having come back clean, not on the histogram alone.
+
+The two groups that were `Partial` are no longer so, and both have since gone
+all the way to runtime bit-identical. The control-flow *shape* fixes that closed
+`Partial` were: `SdfContact` performing the contact store itself rather than
+returning a hit flag (`CollideShapes`), and the triangle-shape gate written as
+three nested `if`s rather than one `&&` chain (`CollideTriangles`). Neither fix
+was sufficient on its own — see the contacts section below for the two semantic
+bugs that were still hiding behind matching control flow.
 
 What remains in the `Equivalent` group, largest first, and why:
 
-- `CollideShapes.hlsl_rev` (231 lines after register normalisation, 64 once
-  `mov` lines are also dropped) and `CollideTriangles.hlsl_rev` (128, 59). FXC
-  6.3 emits a cross product as a two-wide `mul`/`mad` pair plus a scalar
-  `mul`/`mad`, where 10.1 packs it three-wide; each such site costs two
-  instructions. The rest is copy noise — `CollideShapes` carries 209 `mov`s
-  against 50.
-- The `SolveShapes` family (42 to 70). Three causes remain after the
-  `RotateBasis`, row-wise groupshared clear and scalar `QuatMul` fixes: 10.1
-  re-vectorises part of the quaternion multiply and lowers the normalise as
-  `dp4`; it folds a duplicated `t7` load of the same index into one; and in the
-  `*NV` variants it hoists the lane split out of the two inlined reductions
-  where 6.3 recomputes `and l(31)` / `ishr l(5)` at each use.
-- `CollideParticles.hlsl_rev` (20). 10.1 preloads
-  `gParams.kMaxNeighborsPerParticle` into a register and then has to carry it
-  through the three-deep cell loop, which costs six `mov`s that 6.3 avoids by
-  reading the constant buffer at the use site.
-- `TransformShapeBounds.hlsl_rev` (15). The centre rotate's `cross()` is split
-  two-wide-plus-scalar by 6.3, and the two shape-position loads are sunk to
-  their use sites there but hoisted by 10.1.
-- `CalculateAnisotropy.hlsl_rev` (13). 6.3 packs the nine covariance entries
-  into `r3.xyzw`/`r4.xyzw`/`r2.z` and accumulates them with four-wide `mad`s;
-  10.1 keeps the `float3x3` as three separate rows.
-- `SolveVelocities.hlsl_rev` (7). 6.3 shuffles the vorticity gradient into
-  `r4.yzw` (`mov r4.xyzw, r4.yzzx`) and the split cross product that follows
-  costs two instructions.
-- `SmoothPositions.hlsl_rev` (4) is the clearest case of pure allocation noise:
-  the shipped `.asm` carries an `else` arm whose only contents are `mov r, r`
-  copies of the same value the `then` arm produces, and 10.1 coalesces the
-  registers and drops the arm.
+- The `SolveShapes` family (34 to 62 lines after register normalisation, down
+  from 42 to 70 once `QuatMul` and `NormalizeQuat` were rewritten as flat
+  chains). What is left is entirely FXC's SIMD lane packing: 10.1 computes each
+  quaternion component with its own scalar `mul`/`mad` chain where 6.3 packs two
+  or three components into each instruction; 10.1 emits a negate modifier where
+  6.3 multiplies by a `±1.0` literal; 10.1 folds a duplicated `t7` load of the
+  same index into one; and in the `*NV` variants it hoists the lane split out of
+  the two inlined reductions where 6.3 recomputes `and l(31)` / `ishr l(5)` at
+  each use. Each of these was checked instruction by instruction: every
+  per-component arithmetic chain now matches the shipped one in both operand
+  order and fusion points.
 - The three `CalculateInflatableVolume` variants (58 to 78). The residual is
   the scalar-versus-vector read-modify-write of the 12 groupshared bytes that
   hold the running centre: FXC 6.3 emits three `ld_raw`/`add`/`store_raw`
@@ -295,6 +316,24 @@ What remains in the `Equivalent` group, largest first, and why:
   reversed `zyx` component order through the averaging and the length test, and
   un-reverse it (`r5.wzyw`) before normalising, so the packing is undone before
   the value is used; plus tighter cross-product packing in 10.1.
+- `CalculateVorticity` (small). Two `ine r, r, l(0)` that 10.1 folds away; both
+  feed only an `if_z`.
+
+For the record, the groups that used to be listed here and have since been
+promoted to runtime bit-identical, with what it took: `CollideShapes` (231 after
+register normalisation, still 207 today — the textual distance barely moved
+while the behaviour went from wrong to exact), `CollideTriangles` (122),
+`CollideParticles` (20), `TransformShapeBounds` (15), `SolveVelocities` (7,
+promoted without any source change once it was isolated on NVIDIA),
+`CalculateAnisotropy` (2) and `SmoothPositions` (4). That `CollideShapes` sits
+at 207 differing lines and is nonetheless bit-identical at runtime is the single
+most useful calibration point in this document: **textual distance from the
+shipped disassembly and behavioural correctness are close to independent.** A
+large diff is not evidence of a bug, and a small one is not evidence of
+correctness. `SolveVelocities` is the mirror image: 7 differing lines, and the 7
+turned out to be nothing. The corollary is that the *size* of a residual tells
+you almost nothing about whether it hides a defect — only a runtime differential
+test does.
 
 Every recovered source is listed in `Shaders.cfg` exactly once with an entry
 point equal to its file stem, and all of them compile with the Windows SDK FXC
@@ -325,9 +364,13 @@ register-allocation difference cannot disturb:
 4. Constant-buffer fields — the set of distinct `cb0[n]` / `cb1[n]` slots read.
 5. Literals — the multiset of immediate values.
 
-All five axes, plus the full opcode histogram, match on the six `Verified`
-groups. Across the 23 `Equivalent` groups axes 1, 2 and 4 match everywhere. The known and accepted exceptions on
-the other two axes, each inspected individually, are:
+All five axes, plus the full opcode histogram, match on the six structurally
+`Verified` groups. Across the 23 groups that carried `Equivalent` when this
+audit was written, axes 1, 2 and 4 match everywhere. The known and accepted
+exceptions on the other two axes, each inspected individually, are listed below
+— and it is worth saying plainly that this list was complete, correct as far as
+it went, and still missed three real bugs, because none of the three perturbed
+any of the five axes:
 
 - **Redundant-load elimination.** The `SolveShapes` family loads
   `localNormals[entry]` (`t7`) twice in the shipped code and once in ours
@@ -358,11 +401,6 @@ the other two axes, each inspected individually, are:
 Two caveats that the audit cannot remove, and which apply to the shipped
 bytecode just as much as to ours:
 
-- The `SolveShapes` family emits one `dp4` for the quaternion length where the
-  shipped code emits a `mul`/`add`/`mad` chain. The summation order inside a
-  dot-product opcode is implementation-defined, so this term can differ by
-  roughly an ulp. It feeds a `> 0` test and an `rsqrt`, so nothing downstream
-  is sensitive to it.
 - Both builds declare `dcl_globalFlags refactoringAllowed`, which permits the
   driver to reassociate and to fuse `mul`/`add` into `mad`. Bit-exact results
   were therefore never guaranteed even for the shipped bytecode across two
@@ -382,11 +420,393 @@ signature always implied, and `dcl_temps` on the NV variant went from 19 to the
 shipped 34 as a result. This was a genuine behavioural divergence, not a
 packing artifact, and it had been mislabelled `Equivalent`.
 
+## Runtime verification
+
+The structural audit above is not a proof, so the 23 `Equivalent` groups were
+also tested at runtime: the shipped `src/dxbc/g_Flex_<Entry>.txt` blob is
+replaced with one compiled from the recovered source (`fxc -Fo`), `NvFlexRev` is
+rebuilt, and the demo's playback facility compares particle positions frame by
+frame against a baseline recorded with the original blobs. `git checkout --
+src/dxbc` restores the originals afterwards.
+
+    # A = original blobs, write mode; C = identical second run; B = one blob swapped
+    demo --dev=1 --graphics=1 --vsync=0 --windowed=640x480 --disabletweak          "--scene=<Name>" --playback-mode=write --playback-range=0,30
+
+Two things make this harder than it looks, and both change the answer:
+
+1. **Do not use `--playback-mode=read`.** Its comparison uses `eps = 1e-3`, so
+   what it reports is the frame at which a difference has *grown* past 1e-3, not
+   the frame at which one appeared. Record both sides in `write` mode and diff
+   the buffers offline at full precision instead.
+2. **The simulation amplifies.** With identical binaries, Inflatables
+   self-diverges from 1e-11 at frame 7 to 6.6e-4 by frame 53 — roughly 0.4
+   orders of magnitude per frame. A single-ULP difference seeded at frame 0
+   therefore reaches 1e-3 somewhere around frame 10-40 with no logic error at
+   all. Always record a second baseline run (`d_AC`) as the noise floor.
+   Shape Collision, Triangle Collision, Rigid8, Plastic Stack and DamBreak 5cm
+   are bit-deterministic (`d_AC` is exactly 0); Inflatables and Flag Cloth are
+   not.
+
+With the per-frame curves in hand the two signatures separate cleanly, with no
+ambiguous cases:
+
+- **Rounding class** — first nonzero delta at frame 0 at about one ULP
+  (2^-24 = 5.96e-08 relative), then smooth monotone growth. This is what
+  `refactoringAllowed` mul/add fusion produces, and it upholds `Equivalent`.
+- **Logic difference** — positions bit-identical for many frames, then a
+  discontinuous jump straight to a percent-level delta. Re-association cannot
+  produce exactly zero error for 26 frames and then 1e-2; a discrete decision is
+  being taken differently.
+
+The relative magnitude alone is **not** a sufficient discriminator, and reading
+it as one is how the `SolveShapes` reassociation defect survived a full round.
+A first-frame delta of 1.05e-07 was recorded as "rounding class" when it was in
+fact a wrong summation tree. What actually separates the two is the **frame-0
+ULP histogram** — how many values moved and by how much — which the
+`scratchpad/runtime/ulp.py` helper prints:
+
+- a reassociation in a hot path is *loud*. Swapping the last two accumulation
+  terms of `NormalizeQuat` — the smallest possible reassociation, one level —
+  moves 11630 of 192000 floats (6.06%) within frame 0 on Rigid8, with a tail to
+  85 ulp.
+- FXC lane packing is *quiet*. The non-NV `SolveShapes`, whose only remaining
+  residual is packing, moves 8 of 192000 (0.004%), every one of them by exactly
+  1 ulp.
+
+Two orders of magnitude separate them. Measure the histogram before calling
+anything "rounding".
+
+Results:
+
+| Group | Outcome |
+| --- | --- |
+| `CollideParticles`, `TransformShapeBounds` | Bit-identical on Rigid8 and Shape Collision, both zero-noise scenes. Each was first proved live with a no-op probe. |
+| `SolveInflatableVolume`, `CalculateInflatableVolume`, `CalculateInflatableVolumeAMD` | Indistinguishable from the Inflatables noise floor, which is not zero (FP atomics). Cannot be bit-verified on any scene. The plain variant was reached with `--extensions=0`. |
+| `CalculateVorticity`, `UpdateTriangles` | Rounding class; first delta at frame 0 at 6.2e-08 to 2.1e-07 relative. `Equivalent` upheld. |
+| `SolveVelocities` | Was recorded here as rounding class at 6.2e-08. Re-tested in isolation on NVIDIA over 60 frames on Rigid8, Melting and Plastic Coarse: **bit-identical in all five channels**, with no source change. The earlier reading came from a run where another shader in the same batch carried the difference. Now `Verified`. |
+| `SolveShapes`, `SolveShapesPlasticDeformation` and their six `*NV` variants | Was recorded as rounding class at 1.05e-07. That was wrong: a real reassociation defect in `QuatMul` was hiding at exactly that magnitude. Fixed; see below. Still not bit-identical, now at the FXC-lane-packing floor. |
+| `CollideTriangles` | **Was** a logic difference; cause found and fixed (cross operand order in `SegmentIntersectsTriangle`). Now bit-identical over 60 frames. |
+| `CollideShapes` | **Was** a logic difference; two defects found and fixed (convex plane offset, and the sweep base point in four places). Now bit-identical over 60 frames. |
+| 6 `SolveShapes*NV` variants | **Now exercised.** All six run on the RTX 4050 via `--adapter=1`; see [Selecting the GPU](#selecting-the-gpu). Running them is what exposed the `QuatMul` defect. |
+| `SolveInflatableVolumeNV`, `CalculateInflatableVolumeNV`, `UpdateTrianglesNV` | Still not exercised. Reachable on NVIDIA now, but no scene in this survey dispatches them on the tested paths. |
+| `CalculateInflatableVolume` (plain) | Not exercised — the AMD variant is selected on this device. |
+| `CalculateAnisotropy`, `SmoothPositions` | Bit-identical after the harness was extended to record the smoothed positions and the anisotropy buffers, and after a real defect was fixed in `CalculateAnisotropy`. See [Recording the render-only outputs](#recording-the-render-only-outputs). |
+
+Both collision groups are now fixed; the diagnosis is in the next section. The
+blob-size argument that was pursued for a while is recorded here because it was
+a dead end worth not repeating: the recompiled `CollideShapes` blob is 4248
+bytes smaller than the shipped one, but that is the 179-instruction gap already
+measured above at roughly 24 bytes per instruction, 159 of them `mov`s that FXC
+10.1 coalesces away. It was never evidence of missing code. Neither was the
+`min`/`max` ordering around the clamps, which was the standing hypothesis for
+two rounds and was wrong.
+
+### Contacts are the right observable for the collision shaders
+
+Positions only show the *effect* of a contact, several solver stages downstream
+and after chaos has had a frame to work. `NvFlexGetContacts` exposes the direct
+output of `CollideShapes`/`CollideTriangles`, and `--playback-contacts` records
+per-particle contact counts, planes and velocities alongside the positions. The
+contact velocity's `.w` carries the shape index, so a differing contact can be
+mapped back to the shape and hence to the contact function that produced it.
+
+This is what turned a six-month-old "logic difference, cause unknown" into two
+located bugs in one pass. The distinction it draws is:
+
+- **different contact COUNT** — a contact is being generated or dropped, so a
+  predicate is flipping;
+- **same count, different PLANE** — the contact is found but its normal or
+  offset is computed differently.
+
+`CollideTriangles` was the first kind. At frame 18 of Triangle Collision, one
+frame before positions moved at all, 57 particles had count 1 on the shipped
+side and 0 on ours, every one of them carrying the same triangle plane. The
+cause was in `SegmentIntersectsTriangle`: the recovered source computed
+`n0 = cross(cv, d)` where the DXBC puts the segment delta first, `cross(d, cv)`.
+Reversed, `s0` and `s1` invert while `s2` does not, so the three signed volumes
+no longer share a sign and the test can essentially never fire. Tunneling
+contacts were silently dropped, which stays invisible until something actually
+tunnels. With the operand order corrected the shader is bit-identical over 60
+frames on a scene whose noise floor is exactly zero.
+
+`CollideShapes` was the second kind: same count, different plane, one particle
+at a time, and it took two fixes.
+
+The first was narrow. `ConvexContact` stored the margin-adjusted plane offset
+where the DXBC keeps the raw `invLength * p.w`; the adjusted one is used only
+for the ray clip. Confirmed by the stored `w` moving by exactly
+`kCollisionDistance + kCollisionThreshold`.
+
+The second was systematic, and worth stating plainly because it is invisible to
+any amount of staring at the instruction stream. **The contact functions base
+the sweep at `localStart` and march toward `localEnd`; the recovered sources
+based it at `localEnd`.** Both parametrise the same segment, so the clip test
+`enter < exit` agrees and the arithmetic decodes instruction for instruction —
+but `t` is mirrored, and the "closest feature" is then chosen relative to the
+wrong endpoint. Whenever the particle had moved, a different convex plane, box
+face or capsule axis point was selected.
+
+The tell was in the register allocation, not the opcodes: in the shipped blob
+the ray base point and the `localParticleEnd` handed to `StoreContact` live in
+*different* registers, and in ours they were the same register. Four call sites
+were affected — `IntersectSegmentAabb`, the `BoxContact` face selection,
+`CapsuleContact`'s axis projection, and `ConvexContact`'s plane distance.
+
+With all of it applied, Shape Collision, Rigid8 and Triangle Collision are
+bit-identical over 60 frames on every channel. Shape Collision exercises all six
+shape types -- sphere, capsule, box, convex mesh, triangle mesh and SDF -- so the
+sphere and SDF paths are covered by the same result.
+
+### Scenes are not all deterministic, and the noise floor must be measured per scene
+
+Three of the scenes used here are not reproducible run to run, because the
+shaders that feed them accumulate with floating-point atomics
+(`InterlockedAddFp32`), whose ordering varies:
+
+| Scene | Noise floor (same binary, two runs) |
+| --- | --- |
+| Triangle Collision | exactly zero, all channels, 60 frames |
+| Rigid8, Shape Collision, Viscosity Med, Surface Tension High, Rock Pool | exactly zero, 30-40 frames |
+| Inflatables | diverges at frame 7, 2.9e-11 growing to 3e-05 by frame 17 |
+| Flag Cloth | diverges at frame 24, 5.8e-11 growing to 5e-05 by frame 55 |
+
+Re-measured on the RTX 4050, 60 frames, all five channels, two runs per scene.
+The floor is **not** a property of the scene alone — it has to be re-established
+per device, and one scene that is deterministic on AMD is not on NVIDIA:
+
+| Scene | Noise floor on RTX 4050 |
+| --- | --- |
+| Rigid8, Melting, Plastic Coarse, Plastic Very Coarse | exactly zero |
+| Viscosity Med, Surface Tension Med, Triangle Collision, Shape Collision | exactly zero |
+| Plastic Stack | exactly zero |
+| Rigid2 | diverges at frame 59, 3.6e-07 — usable only below ~55 frames |
+
+Measure this before interpreting any result. The inflatable group
+(`SolveInflatableVolume`, `CalculateInflatableVolume`, `CalculateInflatableVolumeAMD`)
+produces a difference whose onset frame and magnitude are *indistinguishable*
+from the scene's own noise floor, which is the strongest statement obtainable
+there -- they cannot be bit-verified on any scene, by construction. An earlier
+round recorded this group as "bit-identical"; that was measured without a noise
+floor and is withdrawn. Flag Cloth is likewise unusable for judging
+`CollideTriangles`; Triangle Collision is the scene to use.
+
+### Constants are invisible to every disassembly comparison
+
+FXC prints float literals to six decimals and 3Dmigoto to eight, so two
+different constants can disassemble to the same text. `1e-9` and `1e-15` both
+print as `l(0.000000)`. `CalculateAnisotropy` was reconstructed with a Jacobi
+convergence threshold of `1e-9` where the shipped blob has `1e-15`
+(`0x3089705F` versus `0x26901D7D`), and **no** text-level check could see it:
+the two disassemblies agreed instruction for instruction, operand for operand,
+including the declaration block and `dcl_temps`.
+
+The tell was behavioural, not textual. Two reconstructions with very different
+register allocation and scheduling produced bit-identical output *to each other*
+while both differed from the shipped blob in exactly the same way. Scheduling
+noise cannot do that; only a semantic difference can.
+
+Compare the constant bits directly, from the `SHEX` chunk of both blobs —
+`scratchpad/constsweep.py` does this for every entry in `Shaders.cfg`. Sweeping
+all 82 entries found this as the only value-level mismatch in the tree. Ten
+shaders differ in the *count* of a shared constant (`1.0`, `-1.0`, `0.3333`),
+which is instruction scheduling, not a different number. Run this check on any
+shader before calling it `Exact` or `Verified`: byte-identical disassembly does
+not imply byte-identical constants.
+
+A too-loose threshold is invisible to inspection for a second reason: it is
+correct on well-conditioned input and only diverges when the sweep would have
+taken another rotation. The symptom was that eigenvalues agreed to ~7e-07
+relative while ~20% of eigenvectors were completely different — a discrete
+decision inside one dispatch, not chaos across frames.
+
+**After the fix, the eigenvector difference is zero.** `CalculateAnisotropy`
+was re-tested in isolation (its blob swapped in alone, so nothing upstream could
+contaminate the result) on the RTX 4050 over 60 frames on Melting, Viscosity Med
+and Surface Tension Med. All three anisotropy channels are bit-identical in
+every frame, and so are `positions` and `smoothPositions`. The channels are
+live, not vacuous: 206666 of 262144 floats nonzero on Viscosity Med, 196608 of
+327680 on Surface Tension Med, 33180 of 33180 on Melting. There is no residual
+eigenvector disagreement of any size, degenerate-basis or otherwise — the
+~20% figure above describes the state *before* the `1e-15` threshold was
+restored.
+
+One caveat when reading a combined run: on Melting the anisotropy channels
+*do* diverge when the whole candidate set is swapped in at once. That is
+downstream, not `CalculateAnisotropy` — Melting dispatches `SolveShapes128NV`,
+whose positions differ from frame 5, and the anisotropy of a different point
+cloud is legitimately different. Isolating the shader is what separates the
+two, and it is why single-shader runs are worth their cost.
+
+### Recording the render-only outputs
+
+`SmoothPositions` and `CalculateAnisotropy` write `mSmoothPositionsOriginal`
+and the anisotropy buffers, which `NvFlexGetParticles` never returns, and
+`mSortedPositions`, which is rewritten from `mPositions` at the top of every
+substep. They are therefore invisible to a positions-only harness. The demo
+already reads both back (`NvFlexGetSmoothParticles` / `NvFlexGetAnisotropy` in
+`UpdateScene`), but only under `!g_interop && g_drawEllipsoids`.
+
+`PlaybackContext` now records five channels per frame — `positions`,
+`smoothPositions`, `anisotropy1..3` — behind a `FPB2` magic, and `UpdateScene`
+fetches the extra buffers whenever playback is active, independent of the
+render flags. Legacy positions-only archives still load; the reader dispatches
+on the magic. Every channel is clamped to the live particle count, because the
+four render buffers are allocated at `maxParticles` and their tails are never
+written.
+
+Two things this makes possible, both of which mattered:
+
+- A **liveness** column. `anisotropy1..3` are zero on a scene with no fluid, and
+  `positions` is zero on a scene that has not emitted yet — on `Adhesion` both
+  are all-zero, so a "no difference" verdict there is vacuous. The differ prints
+  nonzero counts per channel and flags this.
+- A **noise floor of exactly zero**. Neither shader feeds back into the
+  simulation, so unlike the position-based test there is no Lyapunov
+  amplification: any difference is the shader's own. Confirmed empirically — a
+  no-op `SmoothPositions` leaves `positions` bit-identical for 40 frames while
+  moving `smoothPositions` by 2.63.
+
+Verified bit-identical over `Viscosity Med` (40 frames), `Surface Tension High`
+and `Rock Pool` (30 frames each), all five channels, against a baseline noise
+floor of zero.
+
+The nine `*NV` variants used to be unreachable on any GPU: `src/Library.cpp`
+hard-coded `mSMCount = -1`, which forced `enableExtensions` false on NVIDIA and
+zeroed `mIsSHFLSupported` / `mIsFP32ATOMICSupported`; on AMD the NV branches are
+unreachable by vendor id anyway. Both device backends already queried the count
+through `NvAPI_GPU_GetShaderSubPipeCount` and stored it in `m_SMcount`, but never
+exposed it. It is now carried on `FlexDeviceCapabilities::smCount` and read by
+`Library.cpp`, so the NV paths are selected on NVIDIA hardware. Combined with
+`--adapter=N` below, the six `SolveShapes*NV` variants have since been run and
+are no longer unexercised; `SolveInflatableVolumeNV`,
+`CalculateInflatableVolumeNV` and `UpdateTrianglesNV` still are.
+
+### Selecting the GPU
+
+`Library::Init` refuses a null `renderDevice`, so Flex never creates an adapter
+of its own — it is always handed the demo's D3D device. `NvFlexInitDesc::deviceIndex`
+is therefore dead in this implementation (nothing in `src/` reads it), and
+`-device=N` cannot move the solver. The adapter is decided where the *renderer*
+is created, which used to be a hardcoded `AppGraphCtxCreate(0)` in
+`demoContextD3D11.cpp` and `demoContextD3D12.cpp`.
+
+`--adapter=N` now drives that, through `RenderInitOptions::adapterIndex`, for
+both the D3D11 and D3D12 back ends. Every run prints the full adapter list and
+marks the selection, and `NvFlexGetDeviceName` confirms what Flex actually got:
+
+    demo --dev=1 --graphics=1 --adapter=1 --scene="Rigid8" ...
+      adapter 0: AMD Radeon 780M Graphics (vendor 0x1002, 418 MB dedicated)
+      adapter 1: NVIDIA GeForce RTX 4050 Laptop GPU (vendor 0x10DE, 5923 MB dedicated)   <= selected
+      adapter 2: Microsoft Basic Render Driver (vendor 0x1414, 0 MB dedicated)
+    Compute Device: NVIDIA GeForce RTX 4050 Laptop GPU
+
+Interop stays enabled because render and compute are the same device. Pair it
+with `--extensions=0` to force the non-NV kernels on an NVIDIA part, which is
+how the plain `SolveShapes` was isolated from `SolveShapesNV`.
+
+### Reaching every `SolveShapes` variant
+
+`Solver::SolveShapes` picks among six kernels on two predicates: whether the
+scene supplies plastic thresholds and creeps, and `avgWorkload = mNumRigidIndices
+/ mNumRigids` bucketed at `<=32`, `33..127`, `>=128`. The stock scenes cover four
+of the six; the two coarse plastic buckets were unreachable, so `Plastic Coarse`
+and `Plastic Very Coarse` were added to `main.cpp` (a plastic bunny at
+`mClusterSpacing` 3.0 and 8.0). Measured coverage:
+
+| Kernel | Scene | rigids | indices | avgWorkload |
+| --- | --- | --- | --- | --- |
+| `SolveShapes32NV` | Rigid2, Rigid4, Bananas, Game Mesh Rigid | 1000 | 8000 | 8 |
+| `SolveShapesNV` | Rigid8, Soft Bunny, Soft Teapot | 1000 | 48000 | 48 |
+| `SolveShapes128NV` | Melting | 3 | 8295 | 2765 |
+| `SolveShapesPlasticDeformation32NV` | Plastic Bunnies, Plastic Stack | 1176 | 20662 | 17 |
+| `SolveShapesPlasticDeformationNV` | **Plastic Coarse** | 70 | 6648 | 94 |
+| `SolveShapesPlasticDeformation128NV` | **Plastic Very Coarse** | 10 | 6618 | 661 |
+
+`SolveShapes` and `SolveShapesPlasticDeformation` (non-NV) are reached by adding
+`--extensions=0` to any of the above.
+
+### What the remaining `.hlsl_rev` sources still owe
+
+Eight sources keep the `.hlsl_rev` suffix: `SolveShapes`,
+`SolveShapesPlasticDeformation` and their six `*NV` variants. All eight are
+`Equivalent`, which means the structural audit found nothing — and the whole
+point of the runtime round is that the structural audit found nothing on four
+groups that were wrong. Do not read `Equivalent` as "agrees with the shipped
+shader". Read it as "no check run so far has distinguished it".
+
+All eight have now **executed on real hardware**, which is new; the previous
+revision of this document listed six of them as never having run on any GPU.
+Doing so paid immediately: it exposed the `QuatMul` association defect described
+under Current Work Status, which every structural axis had passed and which the
+constant-bit sweep could not see either, because reassociation changes no
+constants.
+
+Current state on an RTX 4050, 60 frames, scenes whose noise floor is exactly
+zero (verified by two baseline runs per scene):
+
+| Source | Scene | Frame-0 footprint | First diff |
+| --- | --- | --- | --- |
+| `SolveShapes` (non-NV) | Rigid8, `--extensions=0` | 8 / 192000 floats, all 1 ulp | frame 0, 6.4e-08 rel |
+| `SolveShapesNV` | Rigid8 | 141 / 192000, 90 of them 1 ulp | frame 0, 6.7e-08 rel |
+| `SolveShapes128NV` | Melting | — | frame 5, 1.3e-07 rel |
+| `SolveShapesPlasticDeformationNV` | Plastic Coarse | — | frame 56, 1.6e-07 rel |
+| `SolveShapesPlasticDeformation128NV` | Plastic Very Coarse | — | frame 53, 6.0e-08 rel |
+
+For scale, from the same scene and harness: before the `QuatMul` fix
+`SolveShapesNV` moved **1886** floats with a tail to 43 ulp, and one deliberate
+single-level reassociation moves **11630**. At 141 and 8, the remaining residual
+is two orders of magnitude below a hot-path reassociation.
+
+Why they are still not `Verified`:
+
+**1. Not bit-identical, and the residual has no source-level explanation.**
+Every per-component arithmetic chain has been compared against the shipped
+disassembly instruction by instruction and matches in operand order and fusion
+points. What differs is FXC 10.1 emitting scalar chains where 6.3 packs two or
+three components per instruction, and a negate modifier where 6.3 multiplies by
+a `±1.0` literal. Both classes are bit-exact in IEEE 754, so on paper the
+residual should be zero — and it is not. That gap is unexplained, and an
+unexplained gap is exactly what the last four defects looked like before they
+were found. It is small, but "small" was also true of the anisotropy threshold.
+
+**2. Three hypotheses about the residual have already been falsified.** Recorded
+so they are not re-run:
+
+- *`dp4` versus the `mul`/`add`/`mad` chain.* Rewriting `NormalizeQuat` to emit
+  the shipped chain removed the `dp4`, but a build differing **only** in that
+  respect is bit-identical to one using `dot(q, q)` — zero floats differ over 60
+  frames. The `dp4` never contributed anything; the entire improvement came from
+  `QuatMul`. The chain form is kept anyway, because matching the shipped
+  disassembly is worth more than the one-line source.
+- *FP-atomic ordering.* `AccumulateDelta` uses `NvInterlockedAddFp32`, whose
+  accumulation order is scheduling-dependent, which looked like a complete
+  explanation. It is not: two blobs differing only in scheduling (the three
+  `NvShflDown` calls reordered, per-component arithmetic untouched) produce
+  bit-identical output over 60 frames. Atomic order is stable here.
+- *Reduction tree shape.* The shuffle deltas were briefly misread as `16..1` in
+  the shipped blob against `1..16` in ours. They are `1,2,4,8,16` in both.
+
+**3. The `1.0` / `-1.0` constant count delta is explained, and is inert.** The
+sweep reports the shipped blobs carrying 19-21 instances of `1.0` and 5-6 of
+`-1.0` against our 16-18 and 2-3. This is `RotateBasis`: 6.3 folds the cross
+against a literal basis vector into a masked `mul r9.xy, r2.zxzz, l(-1.0, 1.0,
+0, 0)` where 10.1 uses a negate source modifier. Multiplication by `±1.0` and the
+negate modifier agree bit-for-bit on every finite value, on both zeroes and on
+infinities. Earlier revisions flagged this as the last open structural
+discrepancy; it is closed, and it is not the residual.
+
+What would promote them: nothing cheap is left. The remaining work is to account
+for the last 8-to-141 floats, which means either finding a source formulation
+that makes FXC 10.1 pack components the way 6.3 did, or showing that no such
+formulation exists and the residual is a property of the two compilers rather
+than of the source. Until then these eight stay `Equivalent`, and the honest
+summary is that they are much closer than they were and still not proven.
+
 Behaviour worth knowing, preserved because the DXBC is authoritative:
 
 - `g_Flex_SolveVelocities` ends the sleep clamp with `mov r3.xyz, -r1.xxxx`,
   i.e. the delta is `-velocity.x` broadcast to all three components rather than
-  `-velocity`. `SolveVelocities.hlsl_rev` reproduces this with `-velocity.xxx`.
+  `-velocity`. `SolveVelocities.hlsl` reproduces this with `-velocity.xxx`.
 - `g_Flex_SolveVelocities` scales the diffuse potential by
   `1 - 2 * kInvRestDensity * density` (emitted as a `dp2` of two equal pairs),
   not `1 - kInvRestDensity * density`. Both `SolveVelocities` quirks carry an
@@ -408,7 +828,7 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Family | DXBC shader group | `src/shaders` source | Status |
 | --- | --- | --- | --- |
 | Flex | `g_Flex_ApplyDeltas` | `ApplyDeltas.hlsl` | Exact |
-| Flex | `g_Flex_CalculateAnisotropy` | `CalculateAnisotropy.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_CalculateAnisotropy` | `CalculateAnisotropy.hlsl` | Verified |
 | Flex | `g_Flex_CalculateBounds` | `CalculateBounds.hlsl` | Exact |
 | Flex | `g_Flex_CalculateBoundsAMD` | `CalculateBounds.hlsl` | Exact |
 | Flex | `g_Flex_CalculateBoundsFinalize` | `CalculateBoundsFinalize.hlsl` | Exact |
@@ -429,9 +849,9 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_ClearCellBuckets` | `ClearCellBuckets.hlsl` | Exact |
 | Flex | `g_Flex_ClearFloat4` | `ClearFloat4.hlsl` | Exact |
 | Flex | `g_Flex_ClearInt` | `ClearInt.hlsl` | Exact |
-| Flex | `g_Flex_CollideParticles` | `CollideParticles.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_CollideShapes` | `CollideShapes.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_CollideTriangles` | `CollideTriangles.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_CollideParticles` | `CollideParticles.hlsl` | Verified |
+| Flex | `g_Flex_CollideShapes` | `CollideShapes.hlsl` | Verified |
+| Flex | `g_Flex_CollideTriangles` | `CollideTriangles.hlsl` | Verified |
 | Flex | `g_Flex_CompactDiffuseParticles` | `CompactDiffuseParticles.hlsl` | Exact |
 | Flex | `g_Flex_ComputeTriangleBounds` | `ComputeTriangleBounds.hlsl` | Exact |
 | Flex | `g_Flex_ContinuousShockPropagation` | `ContinuousShockPropagation.hlsl` | Verified |
@@ -441,7 +861,7 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_NormalizeVertexNormals` | `NormalizeVertexNormals.hlsl` | Exact |
 | Flex | `g_Flex_Predict` | `Predict.hlsl` | Verified |
 | Flex | `g_Flex_ReorderParticles` | `ReorderParticles.hlsl` | Exact |
-| Flex | `g_Flex_SmoothPositions` | `SmoothPositions.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_SmoothPositions` | `SmoothPositions.hlsl` | Verified |
 | Flex | `g_Flex_SolveContactsAccumulate` | `SolveContactsAccumulate.hlsl` | Exact |
 | Flex | `g_Flex_SolveContactsAveraged` | `SolveContactsAveraged.hlsl` | Exact |
 | Flex | `g_Flex_SolveContactsSequential` | `SolveContactsSequential.hlsl` | Exact |
@@ -460,11 +880,11 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_SolveShapesPlasticDeformationNV` | `SolveShapesPlasticDeformationNV.hlsl_rev` | Equivalent |
 | Flex | `g_Flex_SolveSprings` | `SolveSprings.hlsl` | Verified |
 | Flex | `g_Flex_SolveSpringsNV` | `SolveSprings.hlsl` | Verified |
-| Flex | `g_Flex_SolveVelocities` | `SolveVelocities.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_SolveVelocities` | `SolveVelocities.hlsl` | Verified |
 | Flex | `g_Flex_SpringsGenerateIndices` | `SpringsGenerateIndices.hlsl` | Exact |
 | Flex | `g_Flex_SpringsParticleRange` | `SpringsParticleRange.hlsl` | Exact |
 | Flex | `g_Flex_SpringsReorder` | `SpringsReorder.hlsl` | Exact |
-| Flex | `g_Flex_TransformShapeBounds` | `TransformShapeBounds.hlsl_rev` | Equivalent |
+| Flex | `g_Flex_TransformShapeBounds` | `TransformShapeBounds.hlsl` | Verified |
 | Flex | `g_Flex_UpdateDiffuseParticles` | `UpdateDiffuseParticles.hlsl` | Verified |
 | Flex | `g_Flex_UpdateTriangles` | `UpdateTriangles.hlsl` | Equivalent |
 | Flex | `g_Flex_UpdateTrianglesInit` | `UpdateTrianglesInit.hlsl` | Exact |
