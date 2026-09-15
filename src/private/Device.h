@@ -38,6 +38,9 @@ struct FlexDeviceCapabilities {
     bool isSHFLSupported;
     bool isFp32AtomicSupported;
     bool isSwizzleSupported;
+    // NVIDIA shader-subpipe (SM) count, queried through NVAPI; -1 when unknown,
+    // which is always the case on non-NVIDIA adapters.
+    int smCount;
 };
 
 #define VENDOR_ID_IS_NV(id) ((id) == 4318)

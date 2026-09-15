@@ -155,7 +155,7 @@ bool Library::Init(const NvFlexInitDesc* desc, NvFlexErrorCallback errorFunc) {
         mGpuVendorId = VENDOR_ID_OTHERS;
     }
 
-    mSMCount = -1;
+    mSMCount = devCapabilities.smCount;
     const bool enableExtensions =
         desc->enableExtensions && !(mGpuVendorId == VENDOR_ID_NVIDIA && mSMCount == -1);
     mIsSHFLSupported = enableExtensions && devCapabilities.isSHFLSupported;

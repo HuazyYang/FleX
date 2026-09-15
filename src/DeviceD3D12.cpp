@@ -57,6 +57,7 @@ void DeviceD3D12::getDeviceCapabilities(FlexDeviceCapabilities *capabilities) {
     capabilities->isSHFLSupported = m_isSHFLSupported;
     capabilities->isFp32AtomicSupported = m_isFp32AtomicSupported;
     capabilities->isSwizzleSupported = m_isSwizzleSupported;
+    capabilities->smCount = int(m_SMcount);
 }
 
 NvFlexContext *DeviceD3D12::createContext() {
