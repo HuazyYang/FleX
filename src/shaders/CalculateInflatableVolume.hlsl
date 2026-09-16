@@ -227,7 +227,14 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
             pos2 -= pos1;
             pos3 -= pos1;
 
-            vol = dot(cross(pos2, pos3), pos1);
+            // Component-wise cross: the intrinsic makes FXC pack the result three-wide,
+            // which changes the lane order the dot() below sums in. Same issue as
+            // CalculateVorticity.
+            float3 cr;
+            cr.x = pos2.y * pos3.z - pos2.z * pos3.y;
+            cr.y = pos2.z * pos3.x - pos2.x * pos3.z;
+            cr.z = pos2.x * pos3.y - pos2.y * pos3.x;
+            vol = dot(cr, pos1);
 
         } else
             vol = 0.0;
