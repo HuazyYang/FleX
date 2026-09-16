@@ -54,25 +54,34 @@ float4 NormalizeQuat(float4 q) {
 }
 
 float3 Rotate(float4 q, float3 v) {
-    return v * (2.0 * q.w * q.w - 1.0) + cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
+    // The scalar is bound before the cross so that the dp2/add pair is issued
+    // ahead of it, as in the shipped schedule.
+    float scale = 2.0 * q.w * q.w - 1.0;
+    // The cross is spelled out component-wise rather than via cross(): the
+    // intrinsic packs all three lanes into one swizzled mul/mad pair, while the
+    // shipped code emits a two-wide pair for x/y plus a scalar for z.
+    float3 crossQV;
+    crossQV.x = q.y * v.z - q.z * v.y;
+    crossQV.y = q.z * v.x - q.x * v.z;
+    crossQV.z = q.x * v.y - q.y * v.x;
+    return v * scale + crossQV * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
 }
 
 float3 RotateInv(float4 q, float3 v) {
     return Rotate(float4(-q.xyz, q.w), v);
 }
 
-// Rotation with cross(q.xyz, v) and dot(q.xyz, v) supplied pre-folded: the DXBC
-// collapses each basis-axis cross into a single masked mul.
-float3 RotateBasis(float4 q, float3 v, float3 crossQV, float dotQV) {
-    return v * (2.0 * q.w * q.w - 1.0) + crossQV * q.w * 2.0 + q.xyz * dotQV * 2.0;
-}
-
 float4 ExtractRotation(float3 c0, float3 c1, float3 c2, float4 q) {
     [loop]
     for (int i = 0; i < 4; ++i) {
-        float3 r0 = RotateBasis(q, float3(1.0, 0.0, 0.0), float3(0.0, q.z, -q.y), q.x);
-        float3 r1 = RotateBasis(q, float3(0.0, 1.0, 0.0), float3(-q.z, 0.0, q.x), q.y);
-        float3 r2 = RotateBasis(q, float3(0.0, 0.0, 1.0), float3(q.y, -q.x, 0.0), q.z);
+        // The basis axes go through the ordinary Rotate: with a constant axis the
+        // component-wise cross folds each lane down to "0 - q.c * 1" or
+        // "q.c * 1 - 0", which FXC merges into a single masked mul against a +-1
+        // literal - exactly the shipped form. Supplying the cross pre-folded
+        // instead yields a mov with a negate modifier.
+        float3 r0 = Rotate(q, float3(1.0, 0.0, 0.0));
+        float3 r1 = Rotate(q, float3(0.0, 1.0, 0.0));
+        float3 r2 = Rotate(q, float3(0.0, 0.0, 1.0));
 
         float3 numerator = cross(r0, c0) + cross(r1, c1) + cross(r2, c2);
         float denominator = dot(r0, c0) + dot(r1, c1) + dot(r2, c2);
@@ -96,8 +105,13 @@ float3 ReduceSum(uint threadIdx, float3 value) {
     [loop]
     for (uint stride = 32; stride > 0; stride >>= 1) {
         GroupMemoryBarrierWithGroupSync();
-        if (threadIdx < stride)
-            gReduce[threadIdx] = gReduce[threadIdx] + gReduce[threadIdx + stride];
+        if (threadIdx < stride) {
+            // The partner index is bound before the loads so that the iadd is
+            // issued ahead of them, which is what decides the lane assignment of
+            // the two ld_structured results in the shipped blob.
+            uint other = threadIdx + stride;
+            gReduce[threadIdx] = gReduce[threadIdx] + gReduce[other];
+        }
     }
     GroupMemoryBarrierWithGroupSync();
     return gReduce[0];
@@ -199,10 +213,11 @@ void SolveShapesPlasticDeformation(uint rigid : SV_GroupID, uint threadIdx : SV_
             creep = 0.0;
         gCreep = creep;
 
+        float4 previous = rotations[rigid];
         float4 rotation = ExtractRotation(gCovariance._11_12_13,
                                           gCovariance._21_22_23,
                                           gCovariance._31_32_33,
-                                          rotations[rigid]);
+                                          previous);
         rotations[rigid] = rotation;
         translations[rigid] = gCenter;
         gRotation = rotation;

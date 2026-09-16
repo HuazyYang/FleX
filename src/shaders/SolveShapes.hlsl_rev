@@ -25,11 +25,12 @@ groupshared float4 gRotation;
 // quaternion product but not the shipped one, and the difference is visible in
 // rigid-pile scenes within a single frame.
 float4 QuatMul(float4 a, float4 b) {
-    float x = b.w * a.x + a.w * b.x + a.y * b.z - a.z * b.y;
-    float y = b.w * a.y + a.w * b.y + a.z * b.x - a.x * b.z;
-    float z = b.w * a.z + a.w * b.z + a.x * b.y - a.y * b.x;
+    float3 v;
+    v.x = b.w * a.x + a.w * b.x + a.y * b.z - a.z * b.y;
+    v.y = b.w * a.y + a.w * b.y + a.z * b.x - a.x * b.z;
+    v.z = b.w * a.z + a.w * b.z + a.x * b.y - a.y * b.x;
     float w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
-    return float4(x, y, z, w);
+    return float4(v, w);
 }
 
 float4 NormalizeQuat(float4 q) {
@@ -48,22 +49,24 @@ float4 NormalizeQuat(float4 q) {
     return result;
 }
 
+// The cross product is spelled out component-wise rather than via cross(): the
+// intrinsic packs the result three-wide, while the shipped DXBC pairs x and y in
+// one two-wide mul/mad and finishes z as a scalar. Writing it out also lets FXC
+// fold the basis-axis calls below into a single masked multiply by a constant.
 float3 Rotate(float4 q, float3 v) {
-    return v * (2.0 * q.w * q.w - 1.0) + cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
-}
-
-// Rotation with cross(q.xyz, v) and dot(q.xyz, v) supplied pre-folded: the DXBC
-// collapses each basis-axis cross into a single masked mul.
-float3 RotateBasis(float4 q, float3 v, float3 crossQV, float dotQV) {
-    return v * (2.0 * q.w * q.w - 1.0) + crossQV * q.w * 2.0 + q.xyz * dotQV * 2.0;
+    float3 c;
+    c.x = q.y * v.z - q.z * v.y;
+    c.y = q.z * v.x - q.x * v.z;
+    c.z = q.x * v.y - q.y * v.x;
+    return v * (2.0 * q.w * q.w - 1.0) + c * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
 }
 
 float4 ExtractRotation(float3 c0, float3 c1, float3 c2, float4 q) {
     [loop]
     for (int i = 0; i < 4; ++i) {
-        float3 r0 = RotateBasis(q, float3(1.0, 0.0, 0.0), float3(0.0, q.z, -q.y), q.x);
-        float3 r1 = RotateBasis(q, float3(0.0, 1.0, 0.0), float3(-q.z, 0.0, q.x), q.y);
-        float3 r2 = RotateBasis(q, float3(0.0, 0.0, 1.0), float3(q.y, -q.x, 0.0), q.z);
+        float3 r0 = Rotate(q, float3(1.0, 0.0, 0.0));
+        float3 r1 = Rotate(q, float3(0.0, 1.0, 0.0));
+        float3 r2 = Rotate(q, float3(0.0, 0.0, 1.0));
 
         float3 numerator = cross(r0, c0) + cross(r1, c1) + cross(r2, c2);
         float denominator = dot(r0, c0) + dot(r1, c1) + dot(r2, c2);
@@ -87,15 +90,22 @@ float3 ReduceSum(uint threadIdx, float3 value) {
     [loop]
     for (uint stride = 32; stride > 0; stride >>= 1) {
         GroupMemoryBarrierWithGroupSync();
-        if (threadIdx < stride)
-            gReduce[threadIdx] = gReduce[threadIdx] + gReduce[threadIdx + stride];
+        if (threadIdx < stride) {
+            // The partner index is formed before either load: the shipped code
+            // issues the iadd ahead of both ld_structured instructions.
+            uint other = threadIdx + stride;
+            gReduce[threadIdx] = gReduce[threadIdx] + gReduce[other];
+        }
     }
     GroupMemoryBarrierWithGroupSync();
     return gReduce[0];
 }
 
-void AccumulateDelta(uint sortedIndex, float3 delta) {
+void AccumulateDelta(uint sortedIndex, float3 difference, float coefficient) {
+    // The address is formed before the delta: the shipped code issues the ishl
+    // ahead of the multiply by the stiffness coefficient.
     uint addr = sortedIndex << 4;
+    float3 delta = -difference * coefficient;
     InterlockedAddFp32(accum, addr + 0, delta.x);
     InterlockedAddFp32(accum, addr + 4, delta.y);
     InterlockedAddFp32(accum, addr + 8, delta.z);
@@ -129,7 +139,8 @@ void SolveShapes(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
     }
 
     if (threadIdx == 0) {
-        float3 center = gCenter / float(count);
+        float total = float(count);
+        float3 center = gCenter / total;
         gCenter = center;
 
         if (abs(center.x - gPrevTranslation.x) < 1.0e-5)
@@ -149,9 +160,9 @@ void SolveShapes(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
             uint entry = uint(begin) + index;
             float3 offset = newPositions[reverseLookup[rigidIndices[entry]]].xyz - gCenter;
             float3 local = localPositions[entry];
-            a = offset.x * local;
-            b = offset.y * local;
-            c = offset.z * local;
+            a = local * offset.x;
+            b = local * offset.y;
+            c = local * offset.z;
         } else {
             a = 0.0;
             b = 0.0;
@@ -173,10 +184,11 @@ void SolveShapes(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
     }
 
     if (threadIdx == 0) {
+        float4 previous = rotations[rigid];
         float4 rotation = ExtractRotation(gCovariance._11_12_13,
                                           gCovariance._21_22_23,
                                           gCovariance._31_32_33,
-                                          rotations[rigid]);
+                                          previous);
         rotations[rigid] = rotation;
         translations[rigid] = gCenter;
         gRotation = rotation;
@@ -185,7 +197,6 @@ void SolveShapes(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
 
     float coefficient = rigidCoefficients[rigid];
     float4 rotation = gRotation;
-    float3 center = gCenter;
 
     [loop]
     for (int k = 0; k < iterations; ++k) {
@@ -197,13 +208,17 @@ void SolveShapes(uint rigid : SV_GroupID, uint threadIdx : SV_GroupThreadID) {
 
             float3 position = newPositions[sortedIndex].xyz;
             float3 local = localPositions[entry];
-            float3 goal = center + Rotate(rotation, local);
+            // The rotated offset is formed before gCenter is read, so the
+            // loop-invariant 2*w*w-1 term is hoisted ahead of the ld_raw.
+            float3 rotated = Rotate(rotation, local);
+            float3 goal = gCenter + rotated;
             float3 difference = position - goal;
 
             float4 localNormal = localNormals[entry];
-            normals[particle] = float4(Rotate(rotation, localNormals[entry].xyz), localNormal.w);
+            localNormal.xyz = Rotate(rotation, localNormals[entry].xyz);
+            normals[particle] = localNormal;
 
-            AccumulateDelta(sortedIndex, -difference * coefficient);
+            AccumulateDelta(sortedIndex, difference, coefficient);
         }
     }
 }

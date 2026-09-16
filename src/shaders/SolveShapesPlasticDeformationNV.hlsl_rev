@@ -34,10 +34,18 @@ groupshared float4 gRotation;
 // grouping the cross-product terms yields a balanced tree that is a valid
 // quaternion product but not the shipped one, and the difference is visible in
 // rigid-pile scenes within a single frame.
+//
+// The first three terms of the vector part are kept as one three-wide chain and
+// only the last cross term is peeled off per component. Writing all four terms
+// as scalars leaves FXC re-packing lanes it never vectorised, which costs four
+// extra instructions; the leading a.w/b.w products are commuted so that the
+// three-wide mul lands on the same pair the shipped blob starts from. Floating
+// addition is commutative, so the swap is value-identical.
 float4 QuatMul(float4 a, float4 b) {
-    float x = b.w * a.x + a.w * b.x + a.y * b.z - a.z * b.y;
-    float y = b.w * a.y + a.w * b.y + a.z * b.x - a.x * b.z;
-    float z = b.w * a.z + a.w * b.z + a.x * b.y - a.y * b.x;
+    float3 p = a.w * b.xyz + b.w * a.xyz + a.yzx * b.zxy;
+    float x = p.x - a.z * b.y;
+    float y = p.y - a.x * b.z;
+    float z = p.z - a.y * b.x;
     float w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
     return float4(x, y, z, w);
 }
@@ -47,7 +55,7 @@ float4 NormalizeQuat(float4 q) {
     // squares x and y with one vector mul and folds only z and w into mads, so a
     // dp4 here would round differently.
     float2 sq = q.xy * q.xy;
-    float lengthSq = sq.y + sq.x;
+    float lengthSq = sq.x + sq.y;
     lengthSq = q.z * q.z + lengthSq;
     lengthSq = q.w * q.w + lengthSq;
     float4 result;
@@ -58,26 +66,37 @@ float4 NormalizeQuat(float4 q) {
     return result;
 }
 
+// The cross is written out component-wise rather than via the intrinsic: the
+// shipped code emits a two-wide mul/mad for x and y plus a scalar pair for z,
+// which is what the hand-expanded form produces. It also lets FXC fold the
+// literal basis vectors of ExtractRotation into +-1.0 multiplies.
+//
+// The 2 * w * w - 1 factor is a separate parameter so that callers which hoist a
+// rotation out of a loop can hoist that factor with it. Left inside Rotate, FXC
+// still lifts the dp2/add pair out of the loop but schedules it after the rest
+// of the loop preamble, which reorders every groupshared load around it.
+float3 RotateScaled(float4 q, float3 v, float scale) {
+    float3 crossQV;
+    crossQV.x = q.y * v.z - q.z * v.y;
+    crossQV.y = q.z * v.x - q.x * v.z;
+    crossQV.z = q.x * v.y - q.y * v.x;
+    return v * scale + crossQV * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
+}
+
 float3 Rotate(float4 q, float3 v) {
-    return v * (2.0 * q.w * q.w - 1.0) + cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
+    return RotateScaled(q, v, 2.0 * q.w * q.w - 1.0);
 }
 
 float3 RotateInv(float4 q, float3 v) {
     return Rotate(float4(-q.xyz, q.w), v);
 }
 
-// Rotation with cross(q.xyz, v) and dot(q.xyz, v) supplied pre-folded: the DXBC
-// collapses each basis-axis cross into a single masked mul.
-float3 RotateBasis(float4 q, float3 v, float3 crossQV, float dotQV) {
-    return v * (2.0 * q.w * q.w - 1.0) + crossQV * q.w * 2.0 + q.xyz * dotQV * 2.0;
-}
-
 float4 ExtractRotation(float3 c0, float3 c1, float3 c2, float4 q) {
     [loop]
     for (int i = 0; i < 4; ++i) {
-        float3 r0 = RotateBasis(q, float3(1.0, 0.0, 0.0), float3(0.0, q.z, -q.y), q.x);
-        float3 r1 = RotateBasis(q, float3(0.0, 1.0, 0.0), float3(-q.z, 0.0, q.x), q.y);
-        float3 r2 = RotateBasis(q, float3(0.0, 0.0, 1.0), float3(q.y, -q.x, 0.0), q.z);
+        float3 r0 = Rotate(q, float3(1.0, 0.0, 0.0));
+        float3 r1 = Rotate(q, float3(0.0, 1.0, 0.0));
+        float3 r2 = Rotate(q, float3(0.0, 0.0, 1.0));
 
         float3 numerator = cross(r0, c0) + cross(r1, c1) + cross(r2, c2);
         float denominator = dot(r0, c0) + dot(r1, c1) + dot(r2, c2);
@@ -127,8 +146,9 @@ float3 ReduceSum(uint threadIdx, float3 value) {
     return gReduce[0];
 }
 
-void AccumulateDelta(uint sortedIndex, float3 delta) {
+void AccumulateDelta(uint sortedIndex, float3 difference, float coefficient) {
     uint addr = sortedIndex << 4;
+    float3 delta = -difference * coefficient;
     NvInterlockedAddFp32(accum, addr + 0, delta.x);
     NvInterlockedAddFp32(accum, addr + 4, delta.y);
     NvInterlockedAddFp32(accum, addr + 8, delta.z);
@@ -162,20 +182,27 @@ void SolveShapesPlasticDeformationNVBody(uint rigid, uint threadIdx) {
     }
 
     if (threadIdx == 0) {
-        float3 center = gCenter / float(count);
+        float total = float(count);
+        float3 center = gCenter / total;
         gCenter = center;
 
-        if (abs(center.x - gPrevTranslation.x) < 1.0e-5)
+        // Subtracted previous-minus-current, which is what puts the negate on
+        // the first operand of the add, as the shipped blob has it. abs() makes
+        // the two orders equivalent.
+        if (abs(gPrevTranslation.x - center.x) < 1.0e-5)
             gCenter.x = gPrevTranslation.x;
-        if (abs(center.y - gPrevTranslation.y) < 1.0e-5)
+        if (abs(gPrevTranslation.y - center.y) < 1.0e-5)
             gCenter.y = gPrevTranslation.y;
-        if (abs(center.z - gPrevTranslation.z) < 1.0e-5)
+        if (abs(gPrevTranslation.z - center.z) < 1.0e-5)
             gCenter.z = gPrevTranslation.z;
     }
     GroupMemoryBarrierWithGroupSync();
 
     float creep = rigidPlasticCreeps[rigid];
-    bool creepEnabled = 0.0 != creep;
+    // A float-to-bool conversion, not an explicit "creep != 0.0": both test the
+    // same thing, but the comparison form makes FXC canonicalise the zero into
+    // src1, while the shipped blob keeps it in src0 as the conversion does.
+    bool creepEnabled = bool(creep);
     float threshold = rigidPlasticThresholds[rigid];
 
     [loop]
@@ -222,10 +249,11 @@ void SolveShapesPlasticDeformationNVBody(uint rigid, uint threadIdx) {
             creep = 0.0;
         gCreep = creep;
 
+        float4 previous = rotations[rigid];
         float4 rotation = ExtractRotation(gCovariance._11_12_13,
                                           gCovariance._21_22_23,
                                           gCovariance._31_32_33,
-                                          rotations[rigid]);
+                                          previous);
         rotations[rigid] = rotation;
         translations[rigid] = gCenter;
         gRotation = rotation;
@@ -234,6 +262,8 @@ void SolveShapesPlasticDeformationNVBody(uint rigid, uint threadIdx) {
 
     float coefficient = rigidCoefficients[rigid];
     float4 rotation = gRotation;
+    // Hoisted by hand: see the note on RotateScaled.
+    float rotationScale = 2.0 * rotation.w * rotation.w - 1.0;
     float3 center = gCenter;
     float groupCreep = gCreep;
     float plasticScale = coefficient * (1.0 - groupCreep);
@@ -249,7 +279,7 @@ void SolveShapesPlasticDeformationNVBody(uint rigid, uint threadIdx) {
 
             float3 position = newPositions[sortedIndex].xyz;
             float3 local = localPositions[entry];
-            float3 goal = center + Rotate(rotation, local);
+            float3 goal = center + RotateScaled(rotation, local, rotationScale);
             float3 difference = position - goal;
 
             [branch] if (applyPlastic) {
@@ -260,7 +290,7 @@ void SolveShapesPlasticDeformationNVBody(uint rigid, uint threadIdx) {
             float4 localNormal = localNormals[entry];
             normals[particle] = float4(Rotate(gRotation, localNormals[entry].xyz), localNormal.w);
 
-            AccumulateDelta(sortedIndex, -difference * coefficient);
+            AccumulateDelta(sortedIndex, difference, coefficient);
         }
     }
 }

@@ -29,10 +29,14 @@ groupshared float4 gRotation;
 // grouping the cross-product terms yields a balanced tree that is a valid
 // quaternion product but not the shipped one, and the difference is visible in
 // rigid-pile scenes within a single frame.
+// The first two terms are shared across the three components, as the shipped
+// code has them: two three-wide ops. The cross terms stay per component, which
+// is where the shipped code narrows to two-wide and then to scalars.
 float4 QuatMul(float4 a, float4 b) {
-    float x = b.w * a.x + a.w * b.x + a.y * b.z - a.z * b.y;
-    float y = b.w * a.y + a.w * b.y + a.z * b.x - a.x * b.z;
-    float z = b.w * a.z + a.w * b.z + a.x * b.y - a.y * b.x;
+    float3 v = b.w * a.xyz + a.w * b.xyz;
+    float x = v.x + a.y * b.z - a.z * b.y;
+    float y = v.y + a.z * b.x - a.x * b.z;
+    float z = v.z + a.x * b.y - a.y * b.x;
     float w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
     return float4(x, y, z, w);
 }
@@ -53,22 +57,35 @@ float4 NormalizeQuat(float4 q) {
     return result;
 }
 
-float3 Rotate(float4 q, float3 v) {
-    return v * (2.0 * q.w * q.w - 1.0) + cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
+// Component-wise cross. The shipped DXBC pairs x and y into one two-wide
+// mul/mad and leaves z scalar, which the three-wide cross() intrinsic cannot
+// produce, and it is also what makes the basis-axis crosses in ExtractRotation
+// fold down to a single masked mul against a literal vector.
+float3 Cross(float3 a, float3 b) {
+    float3 r;
+    r.x = a.y * b.z - a.z * b.y;
+    r.y = a.z * b.x - a.x * b.z;
+    r.z = a.x * b.y - a.y * b.x;
+    return r;
 }
 
-// Rotation with cross(q.xyz, v) and dot(q.xyz, v) supplied pre-folded: the DXBC
-// collapses each basis-axis cross into a single masked mul.
-float3 RotateBasis(float4 q, float3 v, float3 crossQV, float dotQV) {
-    return v * (2.0 * q.w * q.w - 1.0) + crossQV * q.w * 2.0 + q.xyz * dotQV * 2.0;
+float3 RotateScaled(float4 q, float3 v, float scale) {
+    return v * scale + Cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
+}
+
+float3 Rotate(float4 q, float3 v) {
+    return RotateScaled(q, v, 2.0 * q.w * q.w - 1.0);
 }
 
 float4 ExtractRotation(float3 c0, float3 c1, float3 c2, float4 q) {
     [loop]
     for (int i = 0; i < 4; ++i) {
-        float3 r0 = RotateBasis(q, float3(1.0, 0.0, 0.0), float3(0.0, q.z, -q.y), q.x);
-        float3 r1 = RotateBasis(q, float3(0.0, 1.0, 0.0), float3(-q.z, 0.0, q.x), q.y);
-        float3 r2 = RotateBasis(q, float3(0.0, 0.0, 1.0), float3(q.y, -q.x, 0.0), q.z);
+        // Rotating the literal basis vectors lets FXC fold each cross and dot
+        // into one masked mul; supplying them pre-folded loses the folding and
+        // emits plain movs instead.
+        float3 r0 = Rotate(q, float3(1.0, 0.0, 0.0));
+        float3 r1 = Rotate(q, float3(0.0, 1.0, 0.0));
+        float3 r2 = Rotate(q, float3(0.0, 0.0, 1.0));
 
         float3 numerator = cross(r0, c0) + cross(r1, c1) + cross(r2, c2);
         float denominator = dot(r0, c0) + dot(r1, c1) + dot(r2, c2);
@@ -87,7 +104,19 @@ float4 ExtractRotation(float3 c0, float3 c1, float3 c2, float4 q) {
     return q;
 }
 
-float3 ReduceSum(uint threadIdx, float3 value) {
+// threadIdx is never written here, but it has to be taken by reference: the
+// copy the inout convention forces at the call site is what keeps the lane
+// split below inside the enclosing loop. Passed by value the operand is the
+// input register itself, and FXC evaluates threadIdx & 31 and threadIdx >> 5
+// once in the shader prologue instead of once per iteration.
+float3 ReduceSum(inout uint threadIdx, float3 value) {
+#if SOLVE_SHAPES_WARP_COUNT > 1
+    // Split ahead of the shuffles, not at the use below: the shipped code
+    // computes both before the reduction, which is also what lets the three
+    // reductions of the covariance loop share one pair of instructions.
+    uint lane = threadIdx & (NV_WARP_SIZE - 1);
+    int warpIndex = int(threadIdx) >> 5;
+#endif
     // Warp reduction with the NVAPI down-shuffle, as in CalculateBounds.hlsl.
     [unroll]
     for (uint delta = 1; delta < NV_WARP_SIZE; delta <<= 1) {
@@ -99,8 +128,8 @@ float3 ReduceSum(uint threadIdx, float3 value) {
     }
 
 #if SOLVE_SHAPES_WARP_COUNT > 1
-    if ((threadIdx & (NV_WARP_SIZE - 1)) == 0)
-        gReduce[int(threadIdx) >> 5] = value;
+    if (lane == 0)
+        gReduce[warpIndex] = value;
     GroupMemoryBarrierWithGroupSync();
     if (threadIdx == 0) {
         float3 total = gReduce[0];
@@ -118,8 +147,7 @@ float3 ReduceSum(uint threadIdx, float3 value) {
     return gReduce[0];
 }
 
-void AccumulateDelta(uint sortedIndex, float3 delta) {
-    uint addr = sortedIndex << 4;
+void AccumulateDelta(uint addr, float3 delta) {
     NvInterlockedAddFp32(accum, addr + 0, delta.x);
     NvInterlockedAddFp32(accum, addr + 4, delta.y);
     NvInterlockedAddFp32(accum, addr + 8, delta.z);
@@ -152,7 +180,10 @@ void SolveShapesNVBody(uint rigid, uint threadIdx) {
     }
 
     if (threadIdx == 0) {
-        float3 center = gCenter / float(count);
+        // Bound to a local so the itof lands ahead of the gCenter load, as the
+        // shipped preamble has it.
+        float denominator = float(count);
+        float3 center = gCenter / denominator;
         gCenter = center;
 
         if (abs(center.x - gPrevTranslation.x) < 1.0e-5)
@@ -196,10 +227,12 @@ void SolveShapesNVBody(uint rigid, uint threadIdx) {
     }
 
     if (threadIdx == 0) {
+        // Read before the covariance so the u3 load keeps its shipped position.
+        float4 previous = rotations[rigid];
         float4 rotation = ExtractRotation(gCovariance._11_12_13,
                                           gCovariance._21_22_23,
                                           gCovariance._31_32_33,
-                                          rotations[rigid]);
+                                          previous);
         rotations[rigid] = rotation;
         translations[rigid] = gCenter;
         gRotation = rotation;
@@ -208,6 +241,10 @@ void SolveShapesNVBody(uint rigid, uint threadIdx) {
 
     float coefficient = rigidCoefficients[rigid];
     float4 rotation = gRotation;
+    // Bound here rather than left inside Rotate: the shipped preamble evaluates
+    // 2*w*w - 1 between the gRotation and gCenter loads, which is where the
+    // named local puts it.
+    float scale = 2.0 * rotation.w * rotation.w - 1.0;
     float3 center = gCenter;
 
     [loop]
@@ -220,13 +257,20 @@ void SolveShapesNVBody(uint rigid, uint threadIdx) {
 
             float3 position = newPositions[sortedIndex].xyz;
             float3 local = localPositions[entry];
-            float3 goal = center + Rotate(rotation, local);
+            float3 goal = center + RotateScaled(rotation, local, scale);
             float3 difference = position - goal;
 
+            // Spelled out rather than routed through RotateScaled: the shipped
+            // code scales the float4 it keeps for the w component and re-reads
+            // the element for the cross and the dot, which is two loads of t7.
             float4 localNormal = localNormals[entry];
-            normals[particle] = float4(Rotate(rotation, localNormals[entry].xyz), localNormal.w);
+            float3 rotatedNormal = localNormal.xyz * scale
+                                 + Cross(rotation.xyz, localNormals[entry].xyz) * rotation.w * 2.0
+                                 + rotation.xyz * dot(rotation.xyz, localNormals[entry].xyz) * 2.0;
+            normals[particle] = float4(rotatedNormal, localNormal.w);
 
-            AccumulateDelta(sortedIndex, -difference * coefficient);
+            uint addr = sortedIndex << 4;
+            AccumulateDelta(addr, -difference * coefficient);
         }
     }
 }
