@@ -894,10 +894,79 @@ than to a different program. Those are the ones worth attacking first:
 | `CollideTriangles` | 16780 | 2175 |
 | `ComputeTotalBoundsAMD`, `ComputeTotalBoundsGroupAMD` | 3404 / 3460 | (same length) |
 
-`CreateGrid` is two dwords from exact. The `SolveShapes` family is not in this
-list -- it is 60 to 276 bytes short of the shipped stream, so something is still
-being expressed with fewer instructions, which is a source question and no
-longer a compiler one.
+`CreateGrid` is two dwords from exact.
+
+A byte deficit is **not** a missing-instruction count, and reading it that way
+was a mistake worth recording. The `SolveShapes` family is 60 to 276 bytes short
+of the shipped stream, which looked like ours emitting a shorter program. It is
+not: the non-NV variant emits **383 instructions against the shipped 383**. The
+deficit is operand encoding — a `mul` against a four-component literal encodes
+larger than a `mov` with a negate modifier. The full opcode delta is
+
+    mul -5    mov +4    mad +2    ld_structured -1
+
+and every term is accounted for by the packing classes already documented: three
+`mul l(±1.0)` become three negate-modifier `mov`s in `RotateBasis`, two cross
+products go from a two-wide-plus-scalar pair to one three-wide pack (`mul -2`,
+`mad -2`), `QuatMul` scalarises (`mad +4`), and one duplicated `t7` load folds
+away. Nothing is unattributed, and every class is bit-exact per component.
+
+Which leaves a genuine loose end, stated plainly because the alternative is to
+invent an explanation: if every per-component chain is bit-exact, the output
+should be bit-identical, and on Rigid8 eight floats of 192000 still differ by
+one ulp. Either one of those "bit-exact" claims is wrong somewhere, or something
+outside the compared region differs. It is small and it is unexplained, and
+those two facts should be held together rather than one used to dismiss the
+other.
+
+### The BVH and radix-sort groups, settled at the byte level
+
+Both groups carried `Complete` — reviewed against the DXBC, never round-tripped.
+The byte sweep round-trips them, and they come out better than the status
+implied. Nineteen of the twenty-two bounds/BVH/sort entries reproduce the
+shipped bytecode exactly, `radixSort2CS` including its container.
+
+Neither group can have contributed to any runtime discrepancy measured in this
+project, for a reason stronger than "they look fine": `apply.sh` restores
+`src/dxbc` and then overwrites only the entries named on its command line, and
+no BVH or sort entry was ever named. Every differential run in this document
+executed NVIDIA's own bounds, BVH and sort bytecode on both sides. They were
+never a variable.
+
+What remains open, and what it is worth:
+
+| Entry | Difference | Assessment |
+| --- | --- | --- |
+| `CalculateMortonCodes` | ours packs the three interleave masks into one three-wide `and`; the shipped blob uses a two-wide `and` plus a scalar `and` | Integer bit masks, same masks, same values. Inert. |
+| `ComputeTotalBoundsAMD`, `ComputeTotalBoundsGroupAMD` | identical instruction-stream length, bytes differ | The only genuinely open items. AMD-only by vendor id, so unreachable on the RTX 4050; reachable on the Radeon 780M with `--adapter=0`. |
+| `radixSort1CS`, `radixSort3CS`, `radixSortBlockCS` | 92 to 128 bytes | Integer throughout. A sort defect would reorder particles, which is a discrete change and would surface as a jump, not as drift. |
+
+Worth keeping in mind for the sort in particular: it feeds `InterlockedAddFp32`
+accumulation order, so a *different but still correct* permutation would change
+results without being a bug. That is an argument for testing it against a
+zero-noise scene rather than for reasoning about it.
+
+### When "it is within the ulp band" is a reason to stop
+
+It is a reason to stop when the mechanism producing the difference is known and
+continuous. It is not a reason to stop on magnitude alone, and this project has
+the counter-examples to prove it: of the four defects found, three sat inside
+the rounding band while being discrete errors. `CalculateAnisotropy` agreed to
+~7e-07 on eigenvalues with 20% of eigenvectors wrong. `CollideTriangles`
+silently dropped every tunneling contact. `CollideShapes` based four sweeps at
+the wrong endpoint. None of those is an epsilon story, and all three would have
+passed a magnitude test.
+
+The distinction that actually matters is continuous versus discrete. Epsilon
+amplification explains smooth drift from frame 0. It does not explain a branch
+taken the other way, a contact selected instead of another, or a different
+BVH topology — and those are what the four defects were. So the test to apply is
+not "how big is it" but "do I know the mechanism, and is it continuous?" Where
+the mechanism is identified and continuous — the `SolveShapes` packing residual,
+now attributed opcode by opcode — accepting it is a reasonable engineering
+judgement, and the 650x gap to the disagreement between two *shipped* kernels
+says the simulation cannot tell the difference. Where it is not identified,
+magnitude is not evidence.
 
 ### What the remaining `.hlsl_rev` sources still owe
 
