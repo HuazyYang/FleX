@@ -44,7 +44,13 @@ void CalculateVorticity(int globalIdx: SV_DispatchThreadID) {
             float3 v10 = v1 - v0;
             float len = sqrt(lenSqr);
             float3 q10 = d01 * ((1.0 - len * gParams.kInvRadius) * -gParams.kSpiky2) / len;
-            float3 rot = v10.yzx * q10.zxy - q10.yzx * v10.zxy;
+            // Component-wise rather than the swizzled form. The swizzled cross makes
+            // FXC rotate d01 into non-natural lanes, and d01 also feeds dot(d01, d01),
+            // so the rotation changes that dp3's summation order and the result.
+            float3 rot;
+            rot.x = v10.y * q10.z - q10.y * v10.z;
+            rot.y = v10.z * q10.x - q10.z * v10.x;
+            rot.z = v10.x * q10.y - q10.x * v10.y;
 
             rotSum = insideKernel ? rotSum + rot : rotSum;
         }

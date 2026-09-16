@@ -24,7 +24,13 @@ void SolveSprings(int threadIdx: SV_GroupThreadID, int dispatchIdx: SV_DispatchT
     uint idxStart = particleSpringBegin[springIdxBase];
     uint idxEnd = particleSpringEnd[springIdxBase];
     uint idxRange = outOfBound ? 0 : idxEnd - idxStart;
-    float4 pos0 = sortedNewPositionsTex[reverseLookup[springIdxBase]];
+    // The delta slot is indexed by the reverse-lookup result, not by
+    // springIdxBase. The DXBC overwrites the register holding springIdxBase with
+    // reverseLookup[springIdxBase] here and uses it again for the deltas address,
+    // so writing to springIdxBase * 16 sends every spring delta to the wrong
+    // particle. Only spring scenes (cloth, soft bodies) show it.
+    uint sortedIdx = reverseLookup[springIdxBase];
+    float4 pos0 = sortedNewPositionsTex[sortedIdx];
     float3 Dx = 0.0.xxx;
 
     if (pos0.w > 0.0 && idxRange > 0) {
@@ -63,8 +69,8 @@ void SolveSprings(int threadIdx: SV_GroupThreadID, int dispatchIdx: SV_DispatchT
         Dx += dispInBlocks[threadIdx + 6];
         Dx += dispInBlocks[threadIdx + 7];
 
-        float4 DxTotal = asfloat(deltas.Load4(springIdxBase * 16));
+        float4 DxTotal = asfloat(deltas.Load4(sortedIdx * 16));
         DxTotal += float4(Dx * pos0.w, float(idxRange));
-        deltas.Store4(springIdxBase * 16, asuint(DxTotal));
+        deltas.Store4(sortedIdx * 16, asuint(DxTotal));
     }
 }

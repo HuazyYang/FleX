@@ -223,9 +223,14 @@ The `.hlsl` groups have now been through the same round trip and carry the same
 three statuses. Only the BVH and radix-sort groups are still marked `Complete`,
 meaning reviewed against the DXBC but not round-tripped here.
 
-Summary: 84 DXBC shader groups, of which 67 have been round-tripped — 38
-recompile exactly, 13 are `Verified` and 16 are `Equivalent`. Nothing is
-`Divergent`. The remaining 17 (BVH, radix sort) stay `Complete`.
+Summary: 84 DXBC shader groups, of which 74 have been round-tripped — 38
+recompile exactly, 23 are `Verified` and 13 are `Equivalent`. Nothing is
+`Divergent`. Ten BVH entries stay `Complete`.
+
+Measured against the shipped bytecode rather than the disassembly text, 49 of
+the 82 manifest entries reproduce the shipped SHEX chunk byte for byte, and
+**every** entry now carries evidence beyond the structural audit — see [The
+ledger, closed](#the-ledger-closed).
 
 Both rounds of verification are finished. The structural audit came first and
 the runtime differential test second, and the second round is what earned the
@@ -239,8 +244,16 @@ wrong**, and none of the three could have been caught by reading disassembly:
 - `CalculateAnisotropy` — a Jacobi convergence threshold of `1e-9` where the
   shipped blob has `1e-15`, invisible because both print as `l(0.000000)`.
 
-A later round, on an NVIDIA device, found a fourth in code the audit had also
-passed:
+Three more followed, all in code the audit had also passed. `CalculateVorticity`
+wrote its cross product in swizzled form, which rotated the lanes of a vector
+that also feeds a `dp3` and so changed that sum's order.
+`SolveSprings`/`SolveSpringsNV` addressed the delta buffer with `springIdxBase`
+where the DXBC uses `reverseLookup[springIdxBase]`, sending every spring delta
+to the wrong particle — a two-line disassembly difference that `regnorm` scored
+as 0. Both are detailed under [Closing the
+ledger](#closing-the-ledger-the-seventeen-that-had-only-structural-evidence).
+
+And on the `SolveShapes` family:
 
 - the whole `SolveShapes` family — `QuatMul` written with the cross-product
   terms parenthesised, which FXC lowers to a balanced accumulation tree where
@@ -968,6 +981,93 @@ judgement, and the 650x gap to the disagreement between two *shipped* kernels
 says the simulation cannot tell the difference. Where it is not identified,
 magnitude is not evidence.
 
+### Closing the ledger: the seventeen that had only structural evidence
+
+Seventeen entries had neither byte-exactness nor any runtime test. That is the
+evidence class this project has repeatedly shown to be insufficient, so they
+were tested as a batch. Two of the seventeen were wrong.
+
+**Fifth defect -- `CalculateVorticity`.** The cross product was written in the
+swizzled form `v10.yzx * q10.zxy - q10.yzx * v10.zxy`. That form makes FXC keep
+the separation vector `d01` in rotated lanes, and `d01` also feeds
+`dot(d01, d01)` -- so the rotation changes which lanes the `dp3` sums and
+therefore the order of the summation:
+
+    shipped: add r4.xyzw, r0.zyxz, -r4.zyxz   dp3 r4.yzwy  ->  dy^2 + dx^2 + dz^2
+    ours:    add r4.xyz,  r0.yzxy, -r4.yzxy   dp3 r4.xyzx  ->  dy^2 + dz^2 + dx^2
+
+Rewriting the cross component-wise -- the `CrossExplicit` pattern already used
+in `CollideTriangles` and `CollideShapes` -- restores the shipped lane
+assignment. Before: 35 of 458752 floats differ at frame 0 on Rock Pool, worst
+16 ulp, growing to 0.68 world units by frame 39. After: bit-identical over 40
+frames on both Rock Pool and DamBreak 10cm, the two zero-noise scenes with
+`vorticityConfinement > 0`. The lesson generalises: **cross-product packing is
+inert for the cross itself, but not when the packed register also feeds a dot
+product.** This document previously listed that packing class as harmless.
+
+**Sixth defect -- `SolveSprings` / `SolveSpringsNV`, and the worst one so far.**
+The recovered source wrote the accumulated spring delta to
+`deltas.Load4/Store4(springIdxBase * 16)`. The DXBC overwrites the register
+holding `springIdxBase` with `reverseLookup[springIdxBase]` when it loads `pos0`,
+and then uses *that* register for the deltas address:
+
+    ld_structured r0.x, r0.x, l(0), t6.xxxx   ; r0.x = reverseLookup[springIdxBase]
+    ...
+    ishl r0.x, r0.x, l(4)                     ; address = r0.x * 16
+    ld_raw  r3.xyzw, r0.x, u0
+    store_raw u0.xyzw, r0.x, r1.xyzw
+
+So every spring delta was being written to the wrong particle. Both variants are
+now **byte-identical to the shipped blobs**, and Tearing reproduces the
+shipped-versus-shipped control value exactly (3.63798e-12 at frame 0, same
+particle).
+
+This one is worth dwelling on, because it is the strongest evidence in the
+project for why structural-only verification is not enough. `SolveSprings` and
+`SolveSpringsNV` were marked `Verified`. Their disassembly differed from the
+shipped blob by **two lines**, both of the form `r0.x` versus `r1.y` -- pure
+register allocation to every eye, and `regnorm` scored them 0. The audit, the
+constant sweep and the byte-length check all passed them. What none of those
+could see is that the rest of the program was *textually identical*, so the
+later instruction `ishl r0.x, r0.x, l(4)` read a different value in the two
+builds. A register rename is only inert when the renamed register is dead; here
+it was live, 60 instructions later, under the same name.
+
+### Liveness is not optional, and it caught a false pass
+
+A differential test against a kernel that never runs reports "no difference" for
+the wrong reason. `radixSort1CS` was no-op stubbed and Rigid8 did not move --
+nor did Triangle Collision, nor Env Cloth Small. The sort only dispatches the
+1CS/2CS/3CS path when `numSortBlocks >= 2`, i.e. above 1024 items
+(`RadixSortImpl::sort`); below that only `radixSortBlockCS` runs. It is
+exercised by Cloth Layers, Flag Cloth and Tearing, through the spring sort --
+none of which were in the original scene set. Had the batch been scored without
+the no-op probe, three sort shaders would have been recorded as verified on a
+vacuous result.
+
+### The ledger, closed
+
+All 82 manifest entries now carry evidence that is not merely structural:
+
+| Evidence | Count |
+| --- | --- |
+| byte-exact against the shipped blob (proof; no test needed) | 49 |
+| runtime bit-identical on a zero-noise scene | 20 |
+| runtime indistinguishable from a non-zero noise floor (inflatables) | 5 |
+| runtime tested, not bit-identical (`SolveShapes` family) | 8 |
+| **neither** | **0** |
+
+The batch also produced the first AMD-path runtime evidence:
+`ComputeTotalBoundsAMD` and `ComputeTotalBoundsGroupAMD` are unreachable on the
+RTX 4050 by vendor id, and are bit-identical over 30 frames on the Radeon 780M
+via `--adapter=0`, on Triangle Collision and Shape Collision (both zero-noise
+there).
+
+Byte-exactness rose from 47 to 49 of 82; `CalculateVorticity` is runtime
+bit-identical but still 56 bytes short of the shipped stream, so it is
+`Verified` rather than byte-exact.
+
+
 ### What the remaining `.hlsl_rev` sources still owe
 
 Eight sources keep the `.hlsl_rev` suffix: `SolveShapes`,
@@ -1106,7 +1206,7 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_CalculateInflatableVolumeAMD` | `CalculateInflatableVolume.hlsl` | Equivalent |
 | Flex | `g_Flex_CalculateInflatableVolumeNV` | `CalculateInflatableVolume.hlsl` | Equivalent |
 | Flex | `g_Flex_CalculateParticleHash` | `CalculateParticleHash.hlsl` | Exact |
-| Flex | `g_Flex_CalculateVorticity` | `CalculateVorticity.hlsl` | Equivalent |
+| Flex | `g_Flex_CalculateVorticity` | `CalculateVorticity.hlsl` | Verified |
 | Flex | `g_Flex_ClampDiffuseParticleCount` | `ClampDiffuseParticleCount.hlsl` | Exact |
 | Flex | `g_Flex_ClearCellBuckets` | `ClearCellBuckets.hlsl` | Exact |
 | Flex | `g_Flex_ClearFloat4` | `ClearFloat4.hlsl` | Exact |
@@ -1148,28 +1248,28 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_SpringsReorder` | `SpringsReorder.hlsl` | Exact |
 | Flex | `g_Flex_TransformShapeBounds` | `TransformShapeBounds.hlsl` | Verified |
 | Flex | `g_Flex_UpdateDiffuseParticles` | `UpdateDiffuseParticles.hlsl` | Verified |
-| Flex | `g_Flex_UpdateTriangles` | `UpdateTriangles.hlsl` | Equivalent |
+| Flex | `g_Flex_UpdateTriangles` | `UpdateTriangles.hlsl` | Verified |
 | Flex | `g_Flex_UpdateTrianglesInit` | `UpdateTrianglesInit.hlsl` | Exact |
-| Flex | `g_Flex_UpdateTrianglesNV` | `UpdateTriangles.hlsl` | Equivalent |
+| Flex | `g_Flex_UpdateTrianglesNV` | `UpdateTriangles.hlsl` | Verified |
 | Flex | `g_Flex_UpdateVelocities` | `UpdateVelocities.hlsl` | Exact |
 | Flex | `g_Flex_UpdateVertexNormals` | `UpdateVertexNormals.hlsl` | Exact |
 | Flex | `g_Flex_UpdateVertexNormalsInit` | `UpdateVertexNormalsInit.hlsl` | Exact |
 | Flex | `g_Flex_UpdateVertexNormalsNV` | `UpdateVertexNormals.hlsl` | Exact |
-| Radix sort | `g_RadixSort1CS` | `radixSort1CS.hlsl` | Complete |
-| Radix sort | `g_RadixSort2CS` | `radixSort2CS.hlsl` | Complete |
-| Radix sort | `g_RadixSort3CS` | `radixSort3CS.hlsl` | Complete |
-| Radix sort | `g_RadixSortBlockCS` | `radixSortBlockCS.hlsl` | Complete |
+| Radix sort | `g_RadixSort1CS` | `radixSort1CS.hlsl` | Verified |
+| Radix sort | `g_RadixSort2CS` | `radixSort2CS.hlsl` | Verified |
+| Radix sort | `g_RadixSort3CS` | `radixSort3CS.hlsl` | Verified |
+| Radix sort | `g_RadixSortBlockCS` | `radixSortBlockCS.hlsl` | Verified |
 | BVH | `g_bvh_BuildHierarchy` | `bvh/BuildHierarchy.hlsl` | Complete |
 | BVH | `g_bvh_BuildLeaves` | `bvh/BuildLeaves.hlsl` | Complete |
 | BVH | `g_bvh_CalculateKeyDeltas` | `bvh/CalculateKeyDeltas.hlsl` | Complete |
-| BVH | `g_bvh_CalculateMortonCodes` | `bvh/CalculateMortonCodes.hlsl` | Complete |
+| BVH | `g_bvh_CalculateMortonCodes` | `bvh/CalculateMortonCodes.hlsl` | Verified |
 | BVH | `g_bvh_ComputeTotalBounds` | `bvh/ComputeTotalBounds.hlsl` | Complete |
-| BVH | `g_bvh_ComputeTotalBoundsAMD` | `bvh/ComputeTotalBounds.hlsl` | Complete |
+| BVH | `g_bvh_ComputeTotalBoundsAMD` | `bvh/ComputeTotalBounds.hlsl` | Verified |
 | BVH | `g_bvh_ComputeTotalBoundsFinalize` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Complete |
 | BVH | `g_bvh_ComputeTotalBoundsFinalizeAMD` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Complete |
 | BVH | `g_bvh_ComputeTotalBoundsFinalizeNV` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Complete |
 | BVH | `g_bvh_ComputeTotalBoundsGroup` | `bvh/ComputeTotalBoundsGroup.hlsl` | Complete |
-| BVH | `g_bvh_ComputeTotalBoundsGroupAMD` | `bvh/ComputeTotalBoundsGroup.hlsl` | Complete |
+| BVH | `g_bvh_ComputeTotalBoundsGroupAMD` | `bvh/ComputeTotalBoundsGroup.hlsl` | Verified |
 | BVH | `g_bvh_ComputeTotalBoundsGroupNV` | `bvh/ComputeTotalBoundsGroup.hlsl` | Complete |
 | BVH | `g_bvh_ComputeTotalBoundsNV` | `bvh/ComputeTotalBounds.hlsl` | Complete |
 | BVH | `g_bvh_ComputeTotalInvEdges` | `bvh/ComputeTotalInvEdges.hlsl` | Exact |
