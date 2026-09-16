@@ -13,6 +13,9 @@ void SmoothPositions(uint idx : SV_DispatchThreadID) {
     if (int(idx) < gParams.kNumParticles) {
         float4 original = sortedNewPositionsTex[idx];
         uint originalIndex = indices[idx];
+        // Declared ahead of `result`: the declaration order decides which of the two
+        // gets the mad destination and which gets the copy.
+        float4 sp;
         float4 result = original;
 
         if (phases[idx] & eNvFlexPhaseFluid) {
@@ -51,9 +54,13 @@ void SmoothPositions(uint idx : SV_DispatchThreadID) {
 
             float scale = amount * gParams.kSmoothing;
             result.xyz = original.xyz + (average - original.xyz) * scale;
+            sp.xyz = result.xyz;
+        } else {
+            sp.xyz = original.xyz;
         }
 
         smoothPositionsOriginal[originalIndex] = result;
-        smoothPositions[idx] = float4(result.xyz, original.w);
+        sp.w = original.w;
+        smoothPositions[idx] = sp;
     }
 }

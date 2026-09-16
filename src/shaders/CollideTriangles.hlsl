@@ -60,7 +60,10 @@ float4 NormalizeQuat(float4 q) {
 }
 
 bool OverlapAabb(float3 lowerA, float3 upperA, float3 lowerB, float3 upperB) {
-    return !(any(upperA < lowerB) || any(upperB < lowerA));
+    bool3 a = upperA < lowerB;
+    bool anyA = a.x || a.y || a.z;
+    bool3 b = upperB < lowerA;
+    return !(anyA || b.x || b.y || b.z);
 }
 
 float3 ClosestPointOnTriangle(float3 p, float3 a, float3 b, float3 c) {
@@ -108,8 +111,7 @@ float3 ClosestPointOnTriangle(float3 p, float3 a, float3 b, float3 c) {
     return a + ab * v + ac * w;
 }
 
-bool SegmentIntersectsTriangle(float3 start, float3 end, float3 a, float3 b, float3 c) {
-    float3 d = end - start;
+bool SegmentIntersectsTriangle(float3 d, float3 start, float3 a, float3 b, float3 c) {
     float3 av = a - start;
     float3 bv = b - start;
     float3 cv = c - start;
@@ -122,7 +124,7 @@ bool SegmentIntersectsTriangle(float3 start, float3 end, float3 a, float3 b, flo
     bool s1 = -dot(av, n0) >= 0.0f;
     float3 n1 = CrossExplicit(d, bv);
     bool s2 = dot(n1, av) >= 0.0f;
-    return s0 && s1 && s2;
+    return s0 && (s2 && s1);
 }
 
 void StoreTriangleContact(
@@ -138,7 +140,7 @@ void StoreTriangleContact(
     if (count < maxContacts) {
         int contactIndex = particle * maxContacts + count;
         float3 normal = Rotate(qEnd, localNormal);
-        float planeW = -(dot(normal, shapeEnd) + localPlaneW);
+        float planeW = -(localPlaneW + dot(normal, shapeEnd));
         collisionPlanes[contactIndex] = float4(normal, planeW);
         collisionVelocities[contactIndex] = velocity;
         count++;
@@ -153,12 +155,13 @@ void TraverseShapeBvh(
     inout int stack[BVH_STACK_SIZE],
     out int numTriangleShapes) {
     uint particleChannels = uint(sortedPhases[particle]) & 0xff000000u;
-    float3 queryLower = min(particleStart, particleEnd) - gParams.kCollisionMargin.xxx;
-    float3 queryUpper = max(particleStart, particleEnd) + gParams.kCollisionMargin.xxx;
+    float3 lower = min(particleStart, particleEnd);
+    float3 upper = max(particleStart, particleEnd);
+    float3 queryLower = lower - gParams.kCollisionMargin.xxx;
+    float3 queryUpper = upper + gParams.kCollisionMargin.xxx;
+    stack[0] = shapeBvhRootNode[0];
     int candidateBase = localIdx * MAX_TRIANGLE_SHAPES;
     int stackSize = 1;
-
-    stack[0] = shapeBvhRootNode[0];
     numTriangleShapes = 0;
 
     while (stackSize != 0) {
@@ -211,42 +214,29 @@ void TraverseShapeBvh(
     }
 }
 
-void CollideTriangleMesh(
+void TraverseMeshBvh(
     int particle,
     int localIdx,
     int shape,
-    float3 particleStart,
-    float3 particleEnd,
+    float3 queryLower,
+    float3 queryUpper,
+    float3 localStart,
+    float3 localEnd,
+    float3 shapeEnd,
+    float4 qEnd,
+    float4 geometry,
+    float3 shapeStart,
+    float4 qStart,
+    int meshId,
     inout int stack[BVH_STACK_SIZE],
     inout int count) {
-    float3 shapePosition = shapePositions[shape].xyz;
-    float4 shapeRotation = shapeRotations[shape];
-    float3 shapePrevPosition = shapePrevPositions[shape].xyz;
-    float4 shapePrevRotation = shapePrevRotations[shape];
-
-    float3 shapeDelta = shapePosition - shapePrevPosition;
-    float4 rotationDelta = shapeRotation - shapePrevRotation;
-    float3 shapeStart = shapePrevPosition + shapeDelta * gSubParams.kSubstepStart;
-    float4 qStart = NormalizeQuat(shapePrevRotation + rotationDelta * gSubParams.kSubstepStart);
-    float3 shapeEnd = shapePrevPosition + shapeDelta * gSubParams.kSubstepEnd;
-    float4 qEnd = NormalizeQuat(shapePrevRotation + rotationDelta * gSubParams.kSubstepEnd);
-    float4 geometry = shapeGeometry[shape];
-    int meshId = asint(geometry.w) - 1;
-
-    float3 localStart = RotateInv(qStart, particleStart - shapeStart);
-    float3 localEnd = RotateInv(qEnd, particleEnd - shapeEnd);
-    float3 invScale = 1.0f.xxx / geometry.xyz;
-    float3 queryLower = min(localStart, localEnd) * invScale - gParams.kCollisionMargin * invScale;
-    float3 queryUpper = max(localStart, localEnd) * invScale + gParams.kCollisionMargin * invScale;
+    int stackSize = 1;
+    stack[0] = bvhRootNodeArray[meshId];
     FlexTriangleMeshDevice mesh = meshOffsets[meshId];
-
+    float3 segmentDelta = localEnd - localStart;
     float3 localEndAtStart = Rotate(qStart, localEnd) + shapeStart;
     float3 localEndAtEnd = Rotate(qEnd, localEnd) + shapeEnd;
     float4 velocity = float4((localEndAtEnd - localEndAtStart) * geometry.xyz, float(shape));
-    float3 segmentDelta = localEnd - localStart;
-
-    int stackSize = 1;
-    stack[0] = bvhRootNodeArray[meshId];
 
     while (stackSize != 0) {
         int node;
@@ -258,7 +248,7 @@ void CollideTriangleMesh(
             node = stack[stackSize];
         }
 
-        int nodeIndex = node + mesh.mNodeStart;
+        int nodeIndex = mesh.mNodeStart + node;
         PackedNodeHalf lowerNode = bvhNodeLowersArray[nodeIndex];
         PackedNodeHalf upperNode = bvhNodeUppersArray[nodeIndex];
 
@@ -268,38 +258,46 @@ void CollideTriangleMesh(
             if (lowerNode.ib & 0x80000000u) {
                 int triIndex = int(lowerBits);
                 int indexBase = mesh.mIndexStart + triIndex * 3;
-                int i0 = triangleIndicesArray[indexBase + 0] + mesh.mVertexStart;
-                int i1 = triangleIndicesArray[indexBase + 1] + mesh.mVertexStart;
-                int i2 = triangleIndicesArray[indexBase + 2] + mesh.mVertexStart;
+                int t0 = triangleIndicesArray[indexBase];
+                int2 nextIndex = indexBase + int2(1, 2);
+                int t1 = triangleIndicesArray[nextIndex.x];
+                int t2 = triangleIndicesArray[nextIndex.y];
+                int i1 = mesh.mVertexStart + t1;
+                int i0 = mesh.mVertexStart + t0;
 
                 float3 va = triangleVerticesArray[i0].xyz * geometry.xyz;
                 float3 vb = triangleVerticesArray[i1].xyz * geometry.xyz;
+                int i2 = mesh.mVertexStart + t2;
                 float3 vc = triangleVerticesArray[i2].xyz * geometry.xyz;
                 float3 ab = vb - va;
                 float3 ac = vc - va;
                 float3 normal = normalize(CrossExplicit(ab, ac));
                 float planeW = dot(va, normal);
-                float startDist = dot(localStart, normal) - planeW;
-                float endDist = dot(localEnd, normal) - planeW;
+                float startDot = dot(localStart, normal);
+                float endDot = dot(localEnd, normal);
+                float startDist = startDot - planeW;
+                float endDist = endDot - planeW;
 
                 bool hit = false;
                 float4 plane = float4(normal, planeW);
 
                 if (endDist >= 0.0f && endDist < gParams.kCollisionMargin) {
                     float3 closest = ClosestPointOnTriangle(localEnd, va, vb, vc);
-                    float3 delta = localEnd - closest;
-                    float distSq = dot(delta, delta);
+                    // The shipped blob computes the separation twice with opposite
+                    // operand order: `add -localEnd + closest` for the margin test,
+                    // `add localEnd + -closest` for the contact normal.
+                    float3 toClosest = closest - localEnd;
+                    float distSq = dot(toClosest, toClosest);
                     hit = distSq <= gParams.kCollisionMarginSq;
 
-                    if (hit) {
-                        float lenSq = dot(delta, delta);
-                        float3 contactNormal = lenSq > 0.0f ? delta * rsqrt(lenSq) : normal;
-                        plane = float4(contactNormal, dot(contactNormal, closest));
-                    }
+                    float3 delta = localEnd - closest;
+                    float lenSq = dot(delta, delta);
+                    float3 contactNormal = lenSq > 0.0f ? delta * rsqrt(lenSq) : normal;
+                    plane = hit ? float4(contactNormal, dot(contactNormal, closest)) : plane;
                 }
 
                 [branch] if (!hit && startDist > 0.0f && endDist < 0.0f) {
-                    hit = SegmentIntersectsTriangle(localStart, localEnd, va, vb, vc);
+                    hit = SegmentIntersectsTriangle(segmentDelta, localStart, va, vb, vc);
                 }
 
                 if (hit) {
@@ -337,6 +335,7 @@ void CollideTriangleMesh(
     }
 }
 
+
 [numthreads(BLOCK_DIM_X, 1, 1)]
 void CollideTriangles(int particle : SV_DispatchThreadID, int localIdx : SV_GroupThreadID) {
     if (particle < gParams.kNumParticles) {
@@ -351,8 +350,30 @@ void CollideTriangles(int particle : SV_DispatchThreadID, int localIdx : SV_Grou
 
         int count = 0;
         for (int i = 0; i < numTriangleShapes; ++i) {
-            int candidate = triangleShapeCandidates[localIdx * MAX_TRIANGLE_SHAPES + i];
-            CollideTriangleMesh(particle, localIdx, candidate, particleStart, particleEnd, stack, count);
+            int shape = triangleShapeCandidates[localIdx * MAX_TRIANGLE_SHAPES + i];
+            float3 shapePosition = shapePositions[shape].xyz;
+            float4 shapeRotation = shapeRotations[shape];
+            float3 shapePrevPosition = shapePrevPositions[shape].xyz;
+            float4 shapePrevRotation = shapePrevRotations[shape];
+
+            float3 shapeDelta = shapePosition - shapePrevPosition;
+            float3 shapeStart = shapePrevPosition + shapeDelta * gSubParams.kSubstepStart;
+            float4 rotationDelta = shapeRotation - shapePrevRotation;
+            float4 qStart = NormalizeQuat(shapePrevRotation + rotationDelta * gSubParams.kSubstepStart);
+            float3 shapeEnd = shapePrevPosition + shapeDelta * gSubParams.kSubstepEnd;
+            float4 qEnd = NormalizeQuat(shapePrevRotation + rotationDelta * gSubParams.kSubstepEnd);
+            float4 geometry = shapeGeometry[shape];
+            int meshId = asint(geometry.w) - 1;
+
+            float3 localStart = RotateInv(qStart, particleStart - shapeStart);
+            float3 localEnd = RotateInv(qEnd, particleEnd - shapeEnd);
+            float3 invScale = 1.0f.xxx / geometry.xyz;
+            float3 lower = min(localStart, localEnd);
+            float3 upper = max(localStart, localEnd);
+            float3 queryLower = lower * invScale - gParams.kCollisionMargin * invScale;
+            float3 queryUpper = upper * invScale + gParams.kCollisionMargin * invScale;
+            TraverseMeshBvh(particle, localIdx, shape, queryLower, queryUpper, localStart, localEnd,
+                            shapeEnd, qEnd, geometry, shapeStart, qStart, meshId, stack, count);
         }
 
         collisionCounts[particle] = count;

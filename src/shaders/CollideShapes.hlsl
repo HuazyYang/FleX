@@ -78,17 +78,23 @@ float3 SafeNormalize(float3 v) {
 }
 
 bool OverlapAabb(float3 lowerA, float3 upperA, float3 lowerB, float3 upperB) {
-    return !(any(upperA < lowerB) || any(upperB < lowerA));
+    bool3 a = upperA < lowerB;
+    bool anyA = a.x || a.y || a.z;
+    bool3 b = upperB < lowerA;
+    return !(anyA || b.x || b.y || b.z);
 }
 
-bool IntersectSegmentAabb(float3 a, float3 b, float3 halfExtents) {
-    float3 invD = 1.0f / (b - a);
-    float3 t1 = invD * (halfExtents - a);
-    float3 t0 = invD * (-halfExtents - a);
-    float3 tMin3 = min(t0, t1);
-    float3 tMax3 = max(t0, t1);
-    float tMin = max(tMin3.z, max(tMin3.y, max(tMin3.x, 0.0f)));
-    float tMax = min(tMax3.z, min(tMax3.y, min(tMax3.x, 1.0f)));
+bool IntersectSegmentAabb(float3 invD, float3 a, float3 halfExtents) {
+    float3 t1 = (halfExtents - a) * invD;
+    float3 t0 = (-halfExtents - a) * invD;
+    float3 tMin3 = min(t1, t0);
+    float tMin = max(0.0f, tMin3.x);
+    float3 tMax3 = max(t1, t0);
+    float tMax = min(1.0f, tMax3.x);
+    tMin = max(tMin, tMin3.y);
+    tMax = min(tMax, tMax3.y);
+    tMin = max(tMin, tMin3.z);
+    tMax = min(tMax, tMax3.z);
     return tMin < tMax;
 }
 
@@ -188,8 +194,8 @@ bool CapsuleContact(
 
     // Closest point between the particle sweep (localStart -> localEnd) and the
     // capsule axis segment, expanded by the radius along x.
-    float axisLower = -radius - halfHeight;
-    float axisUpper = radius + halfHeight;
+    float axisLower = -halfHeight - radius;
+    float axisUpper = halfHeight + radius;
     float3 seg = localEnd - localStart;
     float extent = axisUpper - axisLower;
     float3 offset = localStart - float3(axisLower, 0.0f, 0.0f);
@@ -198,7 +204,7 @@ bool CapsuleContact(
     float segDotOffset = dot(seg, offset);
     float axisLengthSq = extent * extent;
     float axisDotOffset = extent * offset.x;
-    float axisDotSeg = extent * seg.x;
+    float axisDotSeg = seg.x * extent;
 
     float denominator = segLengthSq * axisLengthSq - axisDotSeg * axisDotSeg;
     float segParam = (denominator != 0.0f)
@@ -206,12 +212,14 @@ bool CapsuleContact(
                    : 0.0f;
     float axisParam = (axisDotSeg * segParam + axisDotOffset) / axisLengthSq;
 
+    bool axisBelow = axisParam < 0.0f;
+    float segParamBelow = saturate(-segDotOffset / segLengthSq);
     if (axisParam > 1.0f) {
         segParam = saturate((axisDotSeg - segDotOffset) / segLengthSq);
         axisParam = 1.0f;
     }
-    if (axisParam < 0.0f) {
-        segParam = saturate(-segDotOffset / segLengthSq);
+    if (axisBelow) {
+        segParam = segParamBelow;
         axisParam = 0.0f;
     }
 
@@ -219,13 +227,14 @@ bool CapsuleContact(
     float3 closestOnAxis = float3(extent * axisParam + axisLower, 0.0f, 0.0f);
     float3 separation = closestOnSeg - closestOnAxis;
 
+    float separationSq = dot(separation, separation);
     float reach = gParams.kCollisionDistance + gParams.kCollisionThreshold + radius;
-    bool axisContact = reach * reach >= dot(separation, separation);
+    bool axisContact = reach * reach >= separationSq;
 
     normal = SafeNormalize(delta);
     float3 surfacePoint = normal * radius + axisPoint;
     planeW = -dot(normal, surfacePoint);
-    return radialDistance < gParams.kCollisionThreshold || axisContact;
+    return axisContact || radialDistance < gParams.kCollisionThreshold;
 }
 
 bool BoxContact(
@@ -237,21 +246,22 @@ bool BoxContact(
 
     // `normal` and `planeW` are deliberately left untouched on the miss path: the DXBC
     // writes them only once a contact is found, and the caller keeps its own defaults.
+    float3 invD = 1.0f / (localEnd - localStart);
     float3 expanded = halfExtents + gParams.kCollisionDistance;
     expanded = expanded + gParams.kCollisionThreshold;
 
     // The DXBC bases the sweep at localStart and marches toward localEnd; the
     // reversed parametrisation is the same segment but mirrors t.
-    if (!IntersectSegmentAabb(localStart, localEnd, expanded))
+    if (!IntersectSegmentAabb(invD, localStart, expanded))
         return false;
 
     float3 toMax = localStart - expanded;
-    float3 toMin = localStart + expanded;
 
     float best = 3.402823466e+38f;
     float4 plane = float4(1.0f, 0.0f, 0.0f, -halfExtents.x);
 
     best = min(abs(toMax.x), best);
+    float3 toMin = localStart + expanded;
     if (abs(toMin.x) < best) { plane = float4(-1.0f,  0.0f,  0.0f, -halfExtents.x); }
     best = min(abs(toMin.x), best);
     if (abs(toMax.y) < best) { plane = float4( 0.0f,  1.0f,  0.0f, -halfExtents.y); }
@@ -278,24 +288,30 @@ bool ConvexContact(
     FlexConvexMeshDevice convex = convexes[meshId - 1];
     int planeBegin = convex.mPlaneOffset;
     float3 segment = localEnd - localStart;
-    int planeEnd = planeBegin + convex.mPlaneCount;
+    int planeEnd = convex.mPlaneCount + planeBegin;
     float3 invScale = 1.0f / scale;
 
     normal = float3(0.0f, 0.0f, 0.0f);
-    planeW = 0.0f;
     float enter = 0.0f;
     float exit = 1.0f;
-    float closest = 3.402823466e+38f;
+    float2 closestPair = float2(3.402823466e+38f, 0.0f);
 
     for (int i = planeBegin; i < planeEnd; ++i) {
         float4 p = convexPlanes[i];
         float3 n = invScale * p.xyz;
         float invLength = 1.0f / sqrt(dot(n, n));
-        n = n * invLength;
+        // Written as four scalars in this order so the scaled plane offset lands
+        // in the same lane pair as `closest` below; the shipped blob fuses them
+        // into one `mul r28.xyzw, r27.xwyz, r6.wwww`.
+        float nx = invLength * n.x;
+        float wScaled = invLength * p.w;
+        float ny = invLength * n.y;
+        float nz = invLength * n.z;
+        n = float3(nx, ny, nz);
         // The DXBC keeps the unadjusted offset for the stored plane and uses the
         // margin-adjusted one only for the ray clip, so both are needed.
-        float wRaw = invLength * p.w;
-        float w = wRaw - gParams.kCollisionDistance - gParams.kCollisionThreshold;
+        float wRaw = wScaled;
+        float w = invLength * p.w - gParams.kCollisionDistance - gParams.kCollisionThreshold;
 
         // Measured at localStart, the ray origin: this is what picks the
         // "closest" plane, so basing it at the other endpoint selects a
@@ -319,13 +335,14 @@ bool ConvexContact(
             break;
         }
 
-        if (abs(distance) < closest) {
-            closest = abs(distance);
+        float2 candidate = float2(abs(distance), wRaw);
+        if (candidate.x < closestPair.x) {
             normal = n;
-            planeW = wRaw;
+            closestPair = candidate;
         }
     }
 
+    planeW = closestPair.y;
     return enter < exit;
 }
 
@@ -354,19 +371,28 @@ void SdfContact(
         float dist = SampleSDF(sdfIndex, uvw);
         if (dist < (gParams.kCollisionDistance + gParams.kCollisionThreshold) * invScale) {
             float3 h = 1.0f / float3(sdfs[sdfIndex].mDim.xyz);
-            float dx = SampleSDF(sdfIndex, uvw + float3(h.x, 0.0f, 0.0f)) -
-                SampleSDF(sdfIndex, uvw - float3(h.x, 0.0f, 0.0f));
-            float dy = SampleSDF(sdfIndex, uvw + float3(0.0f, h.y, 0.0f)) -
-                SampleSDF(sdfIndex, uvw - float3(0.0f, h.y, 0.0f));
-            float dz = SampleSDF(sdfIndex, uvw + float3(0.0f, 0.0f, h.z)) -
-                SampleSDF(sdfIndex, uvw - float3(0.0f, 0.0f, h.z));
+            // The shipped blob offsets all three components at once
+            // (`mad r10.xyz` / `mad r18.yzw`) and then rebuilds each sample
+            // coordinate from one perturbed component plus two unperturbed ones,
+            // which is where its per-case `mov r16.x, r10.x` / `mov r16.yz`
+            // pairs come from -- 155 instructions that `uvw + float3(h.x,0,0)`
+            // folds away.
+            float3 uvwLo = uvw - h;
+            float3 uvwHi = uvw + h;
+            float dx = SampleSDF(sdfIndex, float3(uvwHi.x, uvw.y, uvw.z)) -
+                SampleSDF(sdfIndex, float3(uvwLo.x, uvw.y, uvw.z));
+            float dy = SampleSDF(sdfIndex, float3(uvw.x, uvwHi.y, uvw.z)) -
+                SampleSDF(sdfIndex, float3(uvw.x, uvwLo.y, uvw.z));
+            float dz = SampleSDF(sdfIndex, float3(uvw.x, uvw.y, uvwHi.z)) -
+                SampleSDF(sdfIndex, float3(uvw.x, uvw.y, uvwLo.z));
 
             float3 gradient = float3(dx, dy, dz);
             float gradientSq = dot(gradient, gradient);
 
             if (gradientSq > 0.0f) {
+                float3 scaledUvw = scale * uvw;
                 float3 normal = gradient * rsqrt(gradientSq);
-                float planeW = scale * dist - dot(normal, scale * uvw);
+                float planeW = scale * dist - dot(normal, scaledUvw);
                 StoreContact(
                     particle,
                     count,
@@ -406,8 +432,10 @@ void CollideShapes(int particle : SV_DispatchThreadID) {
     if (gParams.kNumShapes != 0) {
         float3 particleStart = sortedPositions[particle].xyz;
         uint particleChannels = uint(sortedPhases[particle]) & 0xff000000u;
-        float3 queryLower = min(particleStart, particleEnd) - gParams.kCollisionMargin.xxx;
-        float3 queryUpper = max(particleStart, particleEnd) + gParams.kCollisionMargin.xxx;
+        float3 lower = min(particleStart, particleEnd);
+        float3 upper = max(particleStart, particleEnd);
+        float3 queryLower = lower - gParams.kCollisionMargin.xxx;
+        float3 queryUpper = upper + gParams.kCollisionMargin.xxx;
         uint stack[BVH_STACK_SIZE];
         int stackSize = 1;
         stack[0] = uint(shapeBvhRootNode[0]);
@@ -428,11 +456,13 @@ void CollideShapes(int particle : SV_DispatchThreadID) {
                     if (particleChannels & uint(flags)) {
 
                     uint type = uint(flags) & 7u;
+                    float3 shapePos = shapePositions[shape].xyz;
+                    float4 shapeRot = shapeRotations[shape];
                     float3 shapePrevPos = shapePrevPositions[shape].xyz;
                     float4 shapePrevRot = shapePrevRotations[shape];
-                    float3 positionDelta = shapePositions[shape].xyz - shapePrevPos;
+                    float3 positionDelta = shapePos - shapePrevPos;
                     float3 xStart = positionDelta * gSubParams.kSubstepStart + shapePrevPos;
-                    float4 rotationDelta = shapeRotations[shape] - shapePrevRot;
+                    float4 rotationDelta = shapeRot - shapePrevRot;
                     float4 qStart = NormalizeQuat(rotationDelta * gSubParams.kSubstepStart + shapePrevRot);
                     float3 xEnd = positionDelta * gSubParams.kSubstepEnd + shapePrevPos;
                     float4 qEnd = NormalizeQuat(rotationDelta * gSubParams.kSubstepEnd + shapePrevRot);
@@ -520,9 +550,11 @@ void CollideShapes(int particle : SV_DispatchThreadID) {
                     }
                     }
                 } else {
+                    uint upperBits = upperNode.ib & 0x7fffffffu;
                     stack[stackSize - 1] = lowerBits;
-                    stack[stackSize] = upperNode.ib & 0x7fffffffu;
-                    stackSize = stackSize + 1;
+                    int nextSize = stackSize + 1;
+                    stack[stackSize] = upperBits;
+                    stackSize = nextSize;
                 }
             } else {
                 stackSize = stackSize - 1;

@@ -23,18 +23,40 @@ groupshared float gCreep;
 groupshared float3 gReduce[64];
 groupshared float4 gRotation;
 
-// The accumulations below are deliberately written as flat left-to-right chains
-// rather than the more readable grouped form. FXC contracts each "+ product" into
-// a mad, so the parenthesisation decides where the intermediate roundings fall;
-// grouping the cross-product terms yields a balanced tree that is a valid
-// quaternion product but not the shipped one, and the difference is visible in
-// rigid-pile scenes within a single frame.
+// Each component is a flat left-to-right chain rather than the more readable
+// grouped form. FXC contracts every "+ product" into a mad, so the
+// parenthesisation decides where the intermediate roundings fall; grouping the
+// cross-product terms yields a balanced tree that is a valid quaternion product
+// but not the shipped one, and the difference is visible in rigid-pile scenes
+// within a single frame.
+//
+// Three details here are load-bearing, and together they fix the lane packing of
+// the cross sum in ExtractRotation -- FXC picks that packing from how QuatMul
+// consumes the axis quaternion, not from the cross expression itself:
+//   * `a.xyz * b.w` rather than `b.w * a.xyz`, because mul emits its operands in
+//     reverse source order while mad keeps them;
+//   * x and y share one two-wide pair (`a.yz * b.zx`, `a.zx * b.yz`) and z stays
+//     scalar, which is exactly how the shipped code narrows;
+//   * the last product of the w chain is hoisted into `zz`, and it must sit ahead
+//     of the z chain. That single hoist is what moves the four-wide cross from
+//     lanes y,z,w to the shipped x,z,w -- hoisting any earlier product instead
+//     lets FXC fold it into the leading three-wide mul and loses an instruction,
+//     and placing it after z puts the cross lanes back.
+// Per-component arithmetic order is unchanged, so the rounding is identical.
 float4 QuatMul(float4 a, float4 b) {
-    float x = b.w * a.x + a.w * b.x + a.y * b.z - a.z * b.y;
-    float y = b.w * a.y + a.w * b.y + a.z * b.x - a.x * b.z;
-    float z = b.w * a.z + a.w * b.z + a.x * b.y - a.y * b.x;
-    float w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
-    return float4(x, y, z, w);
+    float3 v = a.w * b.xyz + a.xyz * b.w;
+    // The four x/y cross-term products are materialised as one four-wide multiply
+    // and read back stride-two. FXC re-fuses `t` into the two mads, so the
+    // instruction count is unchanged, but the `a` operands are now laid out
+    // interleaved -- (a.y, a.z | a.z, a.x) instead of two consecutive pairs. That is
+    // what makes the `+` term read the canonical lane of the duplicated z component
+    // and the `-` term read the spare lane, which is the shipped swizzle pair.
+    float4 t = a.yzzx * b.zyxz;
+    float2 xy = v.xy + t.xz - t.yw;
+    float zz = a.z * b.z;
+    float z = v.z + a.x * b.y - a.y * b.x;
+    float w = a.w * b.w - a.x * b.x - a.y * b.y - zz;
+    return float4(xy, z, w);
 }
 
 float4 NormalizeQuat(float4 q) {
@@ -42,7 +64,7 @@ float4 NormalizeQuat(float4 q) {
     // squares x and y with one vector mul and folds only z and w into mads, so a
     // dp4 here would round differently.
     float2 sq = q.xy * q.xy;
-    float lengthSq = sq.y + sq.x;
+    float lengthSq = sq.x + sq.y;
     lengthSq = q.z * q.z + lengthSq;
     lengthSq = q.w * q.w + lengthSq;
     float4 result;
@@ -53,10 +75,10 @@ float4 NormalizeQuat(float4 q) {
     return result;
 }
 
-float3 Rotate(float4 q, float3 v) {
-    // The scalar is bound before the cross so that the dp2/add pair is issued
-    // ahead of it, as in the shipped schedule.
-    float scale = 2.0 * q.w * q.w - 1.0;
+// The 2*w*w-1 scalar is a separate parameter so that callers which rotate several
+// vectors by one quaternion can bind it once, ahead of the rest of their preamble:
+// that is where the shipped blob issues the dp2/add pair.
+float3 RotateScaled(float4 q, float3 v, float scale) {
     // The cross is spelled out component-wise rather than via cross(): the
     // intrinsic packs all three lanes into one swizzled mul/mad pair, while the
     // shipped code emits a two-wide pair for x/y plus a scalar for z.
@@ -67,8 +89,13 @@ float3 Rotate(float4 q, float3 v) {
     return v * scale + crossQV * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
 }
 
-float3 RotateInv(float4 q, float3 v) {
-    return Rotate(float4(-q.xyz, q.w), v);
+float3 Rotate(float4 q, float3 v) {
+    return RotateScaled(q, v, 2.0 * q.w * q.w - 1.0);
+}
+
+float3 RotateInvScaled(float4 q, float3 v, float scale) {
+    // Conjugating leaves w untouched, so the caller's scalar still applies.
+    return RotateScaled(float4(-q.xyz, q.w), v, scale);
 }
 
 float4 ExtractRotation(float3 c0, float3 c1, float3 c2, float4 q) {
@@ -117,8 +144,7 @@ float3 ReduceSum(uint threadIdx, float3 value) {
     return gReduce[0];
 }
 
-void AccumulateDelta(uint sortedIndex, float3 delta) {
-    uint addr = sortedIndex << 4;
+void AccumulateDelta(uint addr, float3 delta) {
     InterlockedAddFp32(accum, addr + 0, delta.x);
     InterlockedAddFp32(accum, addr + 4, delta.y);
     InterlockedAddFp32(accum, addr + 8, delta.z);
@@ -153,7 +179,8 @@ void SolveShapesPlasticDeformation(uint rigid : SV_GroupID, uint threadIdx : SV_
     }
 
     if (threadIdx == 0) {
-        float3 center = gCenter / float(count);
+        float total = float(count);
+        float3 center = gCenter / total;
         gCenter = center;
 
         if (abs(center.x - gPrevTranslation.x) < 1.0e-5)
@@ -166,7 +193,7 @@ void SolveShapesPlasticDeformation(uint rigid : SV_GroupID, uint threadIdx : SV_
     GroupMemoryBarrierWithGroupSync();
 
     float creep = rigidPlasticCreeps[rigid];
-    bool creepEnabled = 0.0 != creep;
+    bool creepEnabled = bool(creep);
     float threshold = rigidPlasticThresholds[rigid];
 
     [loop]
@@ -179,9 +206,9 @@ void SolveShapesPlasticDeformation(uint rigid : SV_GroupID, uint threadIdx : SV_
             float3 position = newPositions[sortedIndex].xyz;
             float3 offset = position - gCenter;
             float3 local = localPositions[entry];
-            a = offset.x * local;
-            b = offset.y * local;
-            c = offset.z * local;
+            a = local * offset.x;
+            b = local * offset.y;
+            c = local * offset.z;
 
             [branch] if (creepEnabled) {
                 float3 displacement = position - oldPositions[sortedIndex].xyz;
@@ -226,6 +253,7 @@ void SolveShapesPlasticDeformation(uint rigid : SV_GroupID, uint threadIdx : SV_
 
     float coefficient = rigidCoefficients[rigid];
     float4 rotation = gRotation;
+    float scale = 2.0 * rotation.w * rotation.w - 1.0;
     float3 center = gCenter;
     float groupCreep = gCreep;
     float plasticScale = coefficient * (1.0 - groupCreep);
@@ -241,18 +269,35 @@ void SolveShapesPlasticDeformation(uint rigid : SV_GroupID, uint threadIdx : SV_
 
             float3 position = newPositions[sortedIndex].xyz;
             float3 local = localPositions[entry];
-            float3 goal = center + Rotate(rotation, local);
+            float3 goal = center + RotateScaled(rotation, local, scale);
             float3 difference = position - goal;
 
             [branch] if (applyPlastic) {
                 float3 deformed = (goal - position) * plasticScale + position;
-                localPositions[entry] = RotateInv(rotation, deformed - center);
+                localPositions[entry] = RotateInvScaled(rotation, deformed - center, scale);
             }
 
+            // Spelled inline rather than through Rotate(): the shipped blob loads
+            // t7[entry] twice at the same index -- once as the float4 whose w is
+            // passed through and whose xyz feeds the scale term, and once as the
+            // xyz that feeds the cross and the dot. Routing both through a single
+            // parameter lets FXC common up the two loads into one.
             float4 localNormal = localNormals[entry];
-            normals[particle] = float4(Rotate(gRotation, localNormals[entry].xyz), localNormal.w);
+            float4 normalRotation = gRotation;
+            float normalScale = 2.0 * normalRotation.w * normalRotation.w - 1.0;
+            float3 normalCross;
+            normalCross.x = normalRotation.y * localNormals[entry].z - normalRotation.z * localNormals[entry].y;
+            normalCross.y = normalRotation.z * localNormals[entry].x - normalRotation.x * localNormals[entry].z;
+            normalCross.z = normalRotation.x * localNormals[entry].y - normalRotation.y * localNormals[entry].x;
+            float3 rotatedNormal = localNormal.xyz * normalScale
+                                 + normalCross * normalRotation.w * 2.0
+                                 + normalRotation.xyz * dot(normalRotation.xyz, localNormals[entry].xyz) * 2.0;
+            normals[particle] = float4(rotatedNormal, localNormal.w);
 
-            AccumulateDelta(sortedIndex, -difference * coefficient);
+            // The address is formed before the delta: the shipped code issues the
+            // ishl ahead of the multiply by the stiffness coefficient.
+            uint addr = sortedIndex << 4;
+            AccumulateDelta(addr, -difference * coefficient);
         }
     }
 }

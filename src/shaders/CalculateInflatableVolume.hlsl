@@ -79,8 +79,8 @@ float3 ReduceCenter(int threadIdx, int numTrisInBlock, float3 center) {
         const int waveCount = int(uint(numTrisInBlock) >> uint(WAVE_SIZE_BITS));
         float3 total = centersInBlock[0];
         [unroll]
-        for (i = 1; i < waveCount; ++i)
-            total = total + centersInBlock[i];
+        for (int k = 1; k < waveCount; ++k)
+            total = total + centersInBlock[k];
         centersInBlock[0] = total;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -91,8 +91,9 @@ float3 ReduceCenter(int threadIdx, int numTrisInBlock, float3 center) {
     for (uint j = uint(numTrisInBlock) >> 1; j > 0; j >>= 1) {
         GroupMemoryBarrierWithGroupSync();
         if (uint(threadIdx) < j) {
+            uint other = threadIdx + j;
             float3 v1 = centersInBlock[threadIdx];
-            float3 v2 = centersInBlock[threadIdx + j];
+            float3 v2 = centersInBlock[other];
             centersInBlock[threadIdx] = v1 + v2;
         }
     }
@@ -132,8 +133,8 @@ float ReduceVolume(int threadIdx, int numTrisInBlock, float vol) {
         const int waveCount = int(uint(numTrisInBlock) >> uint(WAVE_SIZE_BITS));
         float total = volumesInBlock[0];
         [unroll]
-        for (i = 1; i < waveCount; ++i)
-            total = total + volumesInBlock[i];
+        for (int k = 1; k < waveCount; ++k)
+            total = total + volumesInBlock[k];
         volumesInBlock[0] = total;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -144,8 +145,9 @@ float ReduceVolume(int threadIdx, int numTrisInBlock, float vol) {
     for (uint j = uint(numTrisInBlock) >> 1; j > 0; j >>= 1) {
         GroupMemoryBarrierWithGroupSync();
         if (uint(threadIdx) < j) {
+            uint other = threadIdx + j;
             float s1 = volumesInBlock[threadIdx];
-            float s2 = volumesInBlock[threadIdx + j];
+            float s2 = volumesInBlock[other];
             volumesInBlock[threadIdx] = s1 + s2;
         }
     }
@@ -155,7 +157,15 @@ float ReduceVolume(int threadIdx, int numTrisInBlock, float vol) {
 }
 
 [numthreads(BLOCK_DIM_X, 1, 1)]
-void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV_GroupID) {
+// The system values must be declared as vectors and swizzled here. Taking
+// SV_GroupThreadID as a scalar parameter makes FXC 6.3 spill it into a temp
+// (`mov rN, vThreadIDInGroup.x`) once the index is live across the nested
+// reduction loop, which then pins `and l(31)` / `ishr l(5)` inside the loop
+// body instead of the prologue. Read off a swizzle it stays an input register.
+void CalculateInflatableVolume(uint3 groupThreadId: SV_GroupThreadID, uint3 groupId: SV_GroupID) {
+
+    const int threadIdx = groupThreadId.x;
+    const int blockIdx = groupId.x;
 
     if (threadIdx == 0) {
         inflatableInBlock = inflatables[blockIdx];
@@ -175,7 +185,7 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
         float3 center;
 
         if (triIdx < inflatableInBlock.mNumTris) {
-            int triIdxAbs = triIdx + idxBase;
+            int triIdxAbs = idxBase + triIdx;
             int idx1 = indices[triIdxAbs * 3];
             int posIdx1 = reverseLookup[idx1];
 
@@ -195,8 +205,14 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
 
         center = ReduceCenter(threadIdx, numTrisInBlock, center);
 
-        if (threadIdx == 0)
-            centerOfInflatable += center;
+        // Component-wise, not `centerOfInflatable += center`: the shipped blob
+        // reads, adds and writes the three groupshared floats one at a time
+        // (ld_raw/add/store_raw at byte offsets 0, 4 and 8).
+        if (threadIdx == 0) {
+            centerOfInflatable.x += center.x;
+            centerOfInflatable.y += center.y;
+            centerOfInflatable.z += center.z;
+        }
         GroupMemoryBarrierWithGroupSync();
     }
 
@@ -234,7 +250,7 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
             cr.x = pos2.y * pos3.z - pos2.z * pos3.y;
             cr.y = pos2.z * pos3.x - pos2.x * pos3.z;
             cr.z = pos2.x * pos3.y - pos2.y * pos3.x;
-            vol = dot(cr, pos1);
+            vol = dot(pos1, cr);
 
         } else
             vol = 0.0;
@@ -247,8 +263,14 @@ void CalculateInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV
     }
 
     if (threadIdx == 0) {
-        float k = abs(inflatableInBlock.mRestVolume) / (max(abs(inflatableInBlock.mRestVolume * 0.01), abs(volumeOfInflatable)));
+        // `eps` is bound first so the `mul l(0.010000)` lands right after the
+        // load pair, and `k3` last so the final multiply takes it as its
+        // second source. Both are operand-order only; the arithmetic is the
+        // same as `abs(rest) / max(abs(rest * 0.01), abs(vol))` scaled by k^3.
+        float eps = inflatableInBlock.mRestVolume * 0.01;
+        float k = abs(inflatableInBlock.mRestVolume) / (max(abs(volumeOfInflatable), abs(eps)));
 
-        lambdas[blockIdx] = (k * k * k) * (volumeOfInflatable - inflatableInBlock.mRestVolume) * inflatableInBlock.mConstraintScale;
+        float k3 = k * k * k;
+        lambdas[blockIdx] = ((volumeOfInflatable - inflatableInBlock.mRestVolume) * inflatableInBlock.mConstraintScale) * k3;
     }
 }

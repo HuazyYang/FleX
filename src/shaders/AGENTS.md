@@ -54,6 +54,33 @@ authority for reverse-recovery work.
    // byte constant definition follows
   ```
 
+- **Use `tools/dxbccmp.sh` for this.** It does everything described below --
+  compile with the right compiler, normalise, diff -- in one step, and it is the
+  acceptance test:
+
+  ```
+  bash tools/dxbccmp.sh <Entry>        # PASS/---- raw= rn= firstdiff= instr=
+  bash tools/dxbccmp.sh <Entry> -v     # plus both diffs; '<' is shipped, '>' is ours
+  ```
+
+  It reads the recipe out of `Shaders.cfg`, resolves the shipped blob under the
+  three naming conventions (`g_Flex_`, `g_bvh_`, `g_` + capitalised entry), and
+  exits 0 only when the SHEX chunk is byte-identical. `raw` counts differing
+  disassembly lines, `rn` counts them with register names normalised away,
+  `firstdiff` is the index of the first differing instruction, and `instr` is
+  shipped/ours. `tools/bytecmp.py <outdir> <fxc>` runs the same comparison across
+  all 82 manifest entries at once.
+
+  **Compile with FXC 6.3.9600.16384, vendored at `tools/fxc63/`** (gitignored;
+  see the provenance note below for how to re-fetch it). Its `d3dcompiler_47.dll`
+  must sit beside `fxc.exe` -- the copy in `C:\Windows\System32` is a far later
+  build. That said, 6.3 and 10.1 were measured to emit byte-identical code for
+  every shader in this tree, so a 10.x SDK compiler is an acceptable substitute;
+  6.3 is preferred only because it is what built the shipped blobs.
+
+  The manual recipe below is kept because it documents what the tool does and is
+  what you need if you are comparing something outside `Shaders.cfg`.
+
 - The round trip through FXC is the only way to judge bytecode equivalence. On
   Windows the SDK compiler is used directly:
   ```
@@ -100,8 +127,12 @@ authority for reverse-recovery work.
   ISO-8859 rather than UTF-8; pipe through `tr -d '\r'` and use `LC_ALL=C`.
 
 - Several apparent "compiler version" differences are in fact source-controlled.
-  Before writing one off, try these levers, which between them took seven groups
-  from `Equivalent` to `Exact`:
+  **Assume a difference is reachable from source until a measurement says
+  otherwise** — every group that was ever written off as a compiler artifact in
+  this document turned out to be reachable. The levers below, plus the fuller
+  set under [The FXC 6.3 codegen levers, as
+  measured](#the-fxc-63-codegen-levers-as-measured), took every remaining group
+  from "explained away" to byte-identical:
 
   - **Commutative operand order.** FXC 10.1 emits the operands of `mul` in the
     reverse of their source order, so `a * b` disassembles as `mul b, a`; write
@@ -118,7 +149,7 @@ authority for reverse-recovery work.
     as separate scalar ones.
   - **Basis-axis `cross()`.** 10.1 will not fold `cross(q.xyz, float3(1,0,0))`
     down to one masked `mul`. Supply the folded cross and dot to a `RotateBasis`
-    helper (see `TransformShapeBounds.hlsl`, `SolveShapes.hlsl_rev`) and the
+    helper (see `TransformShapeBounds.hlsl`, `SolveShapes.hlsl`) and the
     single instruction comes back.
   - **Gate shape.** An `a && b && c` chain compiles to `and`s feeding one
     `if_nz`; the DXBC's nested `if_nz` gates need nested `if` statements in the
@@ -151,14 +182,22 @@ authority for reverse-recovery work.
 - Use `.hlsl_rev` while a hand-recovered source is still being reconciled with
   its DXBC. Once its group reaches `Exact` or `Verified` in the status table
   below, rename it to `.hlsl` and update its `Shaders.cfg` line (keep the flag
-  column at 52), its `src/Library.cpp` generated-header include, and its table
-  row in the same change; the suffix marks work in progress, not provenance. A
-  group that is still `Equivalent` keeps `.hlsl_rev` until runtime verification
-  clears it — `Equivalent` is not a passing grade, it is the absence of a
-  finding. Every `.hlsl_rev` file in this folder is listed in `Shaders.cfg`.
+  column at 52), its `src/Library.cpp` generated-header include, any `#include`
+  of it from a wrapper variant, and its table row in the same change; the suffix
+  marks work in progress, not provenance.
+
+  **No `.hlsl_rev` files remain.** Every hand-recovered source in this folder has
+  been reconciled. Reintroduce the suffix only for genuinely new recovery work.
+
+- The acceptance bar is **DXBC equivalence against the shipped blob**, measured
+  by `tools/dxbccmp.sh <Entry>`, which compiles with the vendored FXC
+  6.3.9600.16384 and compares. It is fast, deterministic, needs no GPU, and it is
+  decisive when it reaches zero. Prefer it to any behavioural argument: a
+  difference that is bit-neutral at runtime can still be wrong in the source, and
+  most of the defects found in this tree were exactly that.
 
 - Entry-point names must match the shader group name without the `g_Flex_` or
-  `g_bvh_` prefix. Wrapper variants such as `SolveShapes32NV.hlsl_rev` may
+  `g_bvh_` prefix. Wrapper variants such as `SolveShapes32NV.hlsl` may
   include the composed NV body source and only change `numthreads`/entry point
   when that matches the corresponding DXBC.
 
@@ -188,636 +227,78 @@ Status is tracked per unique DXBC shader group. The authoritative recovery
 source is the corresponding `.asm` disassembly in `../dxbc`; DXBC-side `.hlsl`
 artifacts are only rough decompiler hints.
 
-For `.hlsl_rev` groups the status now records the result of an FXC round trip
-(see the FXC recipe above), not just a reading of the source:
+There are two statuses, and both are measured, never asserted:
 
-- `Exact` — the recovered source recompiles to disassembly identical to the
-  shipped `.asm` once the binding/`dcl_*` declarations and the trailing
-  instruction-count comment are removed.
-- `Verified` — not byte-identical, but trustworthy. Reached one of two ways.
-  Either a runtime differential test showed bit-identical output against the
-  shipped blob on scenes with a zero noise floor (the strong form, and the only
-  one that has ever caught a bug), or the structural audit passed on all five
-  axes *and* the opcode histogram matched exactly *and* the constant-bit sweep
-  came back clean, leaving nothing that could carry a semantic difference. The
-  status table marks which; see the summary above.
-- `Equivalent` — control flow, `dcl_*` bindings, constant-buffer fields and
-  memory effects are identical, and every remaining arithmetic difference has
-  been individually accounted for as an FXC 6.3 vs 10.1 artifact (register
-  allocation, in-block scheduling, commutative operand order, write masks,
-  vector packing, and folding of `cross()` against a literal basis vector).
-  It does **not** promise equal opcode counts — see the audit below for what is
-  actually checked, and for the cases where counts legitimately differ. These
-  groups are **pending runtime verification**: the structural audit rules out
-  every divergence that changes control flow, memory effects or bindings, but it
-  is not a proof, and one mislabelled group (see below) shows why that matters.
-- `Divergent` — a runtime differential test (see Runtime verification below)
-  shows the recompiled bytecode producing different output from the shipped
-  blob, with a signature that rules out floating-point rounding. The recovery is
-  wrong somewhere and the group is back to being work in progress. No group
-  currently carries this status; three did, and all three are fixed.
-- `Partial` — some instruction blocks still differ in substance; the divergence
-  is named in the notes under the table.
+- **`Exact`** — the recovered source, compiled with FXC 6.3.9600.16384, produces
+  a SHEX chunk **byte-identical** to the shipped blob. Not "equivalent", not
+  "accounted for": the same program. `tools/dxbccmp.sh <Entry>` exits 0.
+- **`Verified`** — not byte-identical, but a runtime differential test showed
+  bit-identical output against the shipped blob on scenes whose run-to-run noise
+  floor is exactly zero. This is a weaker claim and is always provisional: a
+  `Verified` row means the entry has been attacked and its residual bounded, not
+  that it is finished. All five remaining are diagnosed in "The five that did not
+  close" below.
 
-The `.hlsl` groups have now been through the same round trip and carry the same
-three statuses. Only the BVH and radix-sort groups are still marked `Complete`,
-meaning reviewed against the DXBC but not round-tripped here.
+Summary of 84 DXBC shader groups:
 
-Summary: 84 DXBC shader groups, of which 74 have been round-tripped — 38
-recompile exactly, 23 are `Verified` and 13 are `Equivalent`. Nothing is
-`Divergent`. Ten BVH entries stay `Complete`.
-
-Measured against the shipped bytecode rather than the disassembly text, 49 of
-the 82 manifest entries reproduce the shipped SHEX chunk byte for byte, and
-**every** entry now carries evidence beyond the structural audit — see [The
-ledger, closed](#the-ledger-closed).
-
-Both rounds of verification are finished. The structural audit came first and
-the runtime differential test second, and the second round is what earned the
-trust — of the 23 groups the audit had passed as `Equivalent`, **three were
-wrong**, and none of the three could have been caught by reading disassembly:
-
-- `CollideTriangles` — `cross(cv, d)` where the DXBC has `cross(d, cv)`, which
-  silently disabled the tunneling test;
-- `CollideShapes` — the contact sweep based at `localEnd` instead of
-  `localStart`, plus a convex plane offset stored margin-adjusted;
-- `CalculateAnisotropy` — a Jacobi convergence threshold of `1e-9` where the
-  shipped blob has `1e-15`, invisible because both print as `l(0.000000)`.
-
-Three more followed, all in code the audit had also passed. `CalculateVorticity`
-wrote its cross product in swizzled form, which rotated the lanes of a vector
-that also feeds a `dp3` and so changed that sum's order.
-`SolveSprings`/`SolveSpringsNV` addressed the delta buffer with `springIdxBase`
-where the DXBC uses `reverseLookup[springIdxBase]`, sending every spring delta
-to the wrong particle — a two-line disassembly difference that `regnorm` scored
-as 0. Both are detailed under [Closing the
-ledger](#closing-the-ledger-the-seventeen-that-had-only-structural-evidence).
-
-And on the `SolveShapes` family:
-
-- the whole `SolveShapes` family — `QuatMul` written with the cross-product
-  terms parenthesised, which FXC lowers to a balanced accumulation tree where
-  the shipped blob is a flat left-to-right `mad` chain. Every term is correct
-  and the products are identical; only the order of the three additions differs.
-  On Rigid8 that moved 1886 of 192000 floats within frame 0, by up to 43 ulp,
-  growing to 1.9 world units by frame 59.
-
-Twenty-five hand-recovered groups have now reached `Exact` or `Verified` and
-carry the `.hlsl` suffix. Eight `.hlsl_rev` sources remain, all `Equivalent`:
-the `SolveShapes` and `SolveShapesPlasticDeformation` variants. See [What the
-remaining `.hlsl_rev` sources still
-owe](#what-the-remaining-hlsl_rev-sources-still-owe) for why none of them can be
-promoted yet.
-
-The thirteen `Verified` groups fall into two tiers, and the distinction matters
-when deciding how far to trust one:
-
-- **Runtime bit-identical** (7): `g_Flex_CalculateAnisotropy`,
-  `g_Flex_CollideParticles`, `g_Flex_CollideShapes`, `g_Flex_CollideTriangles`,
-  `g_Flex_SmoothPositions`, `g_Flex_TransformShapeBounds`,
-  `g_Flex_SolveVelocities`. All seven were swapped in together and produced
-  bit-identical positions, smoothed positions and anisotropy over 60 frames on
-  Rigid8, Shape Collision, Triangle Collision and Viscosity Med — four scenes
-  whose noise floor is exactly zero. The first six were then re-run **on a
-  second vendor**, an NVIDIA RTX 4050, alongside the eight `SolveShapes`
-  variants, and stayed bit-identical on Viscosity Med, Surface Tension Med,
-  Triangle Collision and Shape Collision over 60 frames. `SolveVelocities` was
-  additionally isolated on Rigid8, Melting and Plastic Coarse for 60 frames each
-  and was bit-identical in all five channels there too. This is the strongest
-  evidence available anywhere in this tree.
-- **Structural only** (6): `g_Flex_ContinuousShockPropagation`,
-  `g_Flex_CreateGrid`, `g_Flex_Predict`, `g_Flex_SolveSprings`,
-  `g_Flex_SolveSpringsNV`, `g_Flex_UpdateDiffuseParticles`. These passed all
-  five audit axes *and* an exact opcode histogram, so their entire residual is
-  register naming (`CreateGrid`, `SolveSprings`, `SolveSpringsNV`,
-  `UpdateDiffuseParticles`, plus one commutative `mul` order in the last), one
-  `rsq` scheduled two instructions later (`Predict`), or one `ld_raw` moved and
-  one `add` reversed (`ContinuousShockPropagation`). They were accepted without
-  a runtime check because nothing was left that could carry a semantic
-  difference — but note that `CalculateAnisotropy` also had an exact opcode
-  histogram and was still wrong, so this tier rests on the constant-bit sweep
-  having come back clean, not on the histogram alone.
-
-The two groups that were `Partial` are no longer so, and both have since gone
-all the way to runtime bit-identical. The control-flow *shape* fixes that closed
-`Partial` were: `SdfContact` performing the contact store itself rather than
-returning a hit flag (`CollideShapes`), and the triangle-shape gate written as
-three nested `if`s rather than one `&&` chain (`CollideTriangles`). Neither fix
-was sufficient on its own — see the contacts section below for the two semantic
-bugs that were still hiding behind matching control flow.
-
-What remains in the `Equivalent` group, largest first, and why:
-
-- The `SolveShapes` family (34 to 62 lines after register normalisation, down
-  from 42 to 70 once `QuatMul` and `NormalizeQuat` were rewritten as flat
-  chains). What is left is entirely SIMD lane packing: our build computes each
-  quaternion component with its own scalar `mul`/`mad` chain where the shipped
-  blob packs two or three components into each instruction; ours emits a negate
-  modifier where the shipped blob multiplies by a `±1.0` literal; ours folds a
-  duplicated `t7` load of the same index into one; and in the `*NV` variants it
-  hoists the lane split out of the two inlined reductions where the shipped blob
-  recomputes `and l(31)` / `ishr l(5)` at each use. This is a property of the
-  source, not of FXC's version — both compilers emit these same bytes from it.
-  Each was checked instruction by instruction: every
-  per-component arithmetic chain now matches the shipped one in both operand
-  order and fusion points.
-- The three `CalculateInflatableVolume` variants (58 to 78). The residual is
-  the scalar-versus-vector read-modify-write of the 12 groupshared bytes that
-  hold the running centre: FXC 6.3 emits three `ld_raw`/`add`/`store_raw`
-  triples at byte offsets 0, 4 and 8 where 10.1 emits one three-component
-  triple at offset 0. The block runs on thread 0 only, between two
-  `sync_g_t`s, so the two forms are interchangeable.
-- `UpdateTriangles` and `UpdateTrianglesNV` (17) carry the wind vector in
-  reversed `zyx` component order through the averaging and the length test, and
-  un-reverse it (`r5.wzyw`) before normalising, so the packing is undone before
-  the value is used; plus tighter cross-product packing in 10.1.
-- `CalculateVorticity` (small). Two `ine r, r, l(0)` that 10.1 folds away; both
-  feed only an `if_z`.
-
-For the record, the groups that used to be listed here and have since been
-promoted to runtime bit-identical, with what it took: `CollideShapes` (231 after
-register normalisation, still 207 today — the textual distance barely moved
-while the behaviour went from wrong to exact), `CollideTriangles` (122),
-`CollideParticles` (20), `TransformShapeBounds` (15), `SolveVelocities` (7,
-promoted without any source change once it was isolated on NVIDIA),
-`CalculateAnisotropy` (2) and `SmoothPositions` (4). That `CollideShapes` sits
-at 207 differing lines and is nonetheless bit-identical at runtime is the single
-most useful calibration point in this document: **textual distance from the
-shipped disassembly and behavioural correctness are close to independent.** A
-large diff is not evidence of a bug, and a small one is not evidence of
-correctness. `SolveVelocities` is the mirror image: 7 differing lines, and the 7
-turned out to be nothing. The corollary is that the *size* of a residual tells
-you almost nothing about whether it hides a defect — only a runtime differential
-test does.
-
-Every recovered source is listed in `Shaders.cfg` exactly once with an entry
-point equal to its file stem, and all of them compile with the Windows SDK FXC
-as `cs_5_0`. The only FXC diagnostics are three intentional ones: the
-`potentially uninitialized variable` warnings for `p0` in `CollideParticles`
-and for `lower`/`upper` in `TransformShapeBounds`, which reproduce the DXBC's
-habit of leaving an output unwritten on the miss path, and a register-pressure
-performance note on `CollideTriangles`. No source in this folder contains a
-decompiler placeholder.
-
-Note that the DXC in the Windows 10.0.19041 SDK does not resolve the
-angle-bracket `#include <nvHLSLExtns.h>` from `-I`, so the DXC syntax check
-covers every recovered source except the six NV `SolveShapes` variants. FXC is
-the authority for this work in any case.
-
-## Equivalence audit
-
-A diff of the disassembly is not by itself evidence of equivalence, so every
-`Equivalent` group has been checked mechanically on five axes that a
-register-allocation difference cannot disturb:
-
-1. `dcl_*` — resource slots, buffer strides, raw vs structured vs typed kinds,
-   UAV declarations, `dcl_tgsm` sizes, `dcl_thread_group`, `dcl_globalFlags`.
-2. Control flow — counts of `if_nz` / `if_z` / `else` / `endif` / `loop` /
-   `endloop` / `break` / `breakc_*` / `switch` / `case` / `ret` / `sync_*`.
-3. Memory effects — counts of every `ld_*` / `store_*` / `imm_atomic_*` /
-   `sample*`, and the number of references to each `t#` / `u#` / `g#`.
-4. Constant-buffer fields — the set of distinct `cb0[n]` / `cb1[n]` slots read.
-5. Literals — the multiset of immediate values.
-
-All five axes, plus the full opcode histogram, match on the six structurally
-`Verified` groups. Across the 23 groups that carried `Equivalent` when this
-audit was written, axes 1, 2 and 4 match everywhere. The known and accepted
-exceptions on the other two axes, each inspected individually, are listed below
-— and it is worth saying plainly that this list was complete, correct as far as
-it went, and still missed three real bugs, because none of the three perturbed
-any of the five axes:
-
-- **Redundant-load elimination.** The `SolveShapes` family loads
-  `localNormals[entry]` (`t7`) twice in the shipped code and once in ours
-  (`ld_structured_indexable` 18 vs 17, or 21 vs 20). `t7` is an SRV, read-only
-  for the whole dispatch, and both loads use the same index, so the values are
-  identical.
-- **Scalar versus vector groupshared read-modify-write.** See the
-  `CalculateInflatableVolume` note above: the same 12 bytes, the same addition,
-  one thread, same barriers.
-- **`cross()` packing.** The shipped blobs emit a cross product as a two-wide
-  `mul`/`mad` pair plus a scalar `mul`/`mad`; our sources compile to a
-  three-wide pack. Two extra instructions per site, identical per-component
-  arithmetic. Originally read as an FXC 6.3 versus 10.1 difference, which is
-  disproved — it is a source difference nobody has yet found the formulation
-  for. This accounts for
-  the bulk of the `mul`/`mad` deltas in `CollideShapes`, `CollideTriangles`,
-  `TransformShapeBounds`, `CalculateVorticity`, `SolveInflatableVolume`,
-  `UpdateTriangles` and `SolveVelocities`.
-- **Common-subexpression elimination.** `CollideTriangles` computes a delta and
-  its `dp3` twice in the shipped code, once with each operand order; since
-  `dot(-D, -D) == dot(D, D)` bit for bit, 10.1 keeps one (`dp3` 22 vs 21). The
-  normalised direction that follows uses the same operand order on both sides,
-  so the contact normal does not flip.
-- **Boolean materialisation.** `CalculateVorticity` has two `ine r, r, l(0)`
-  that 10.1 folds away. Both results feed only an `if_z`, where the truth value
-  is unchanged.
-- **Literal component placement.** Differences such as `l(0,1,2,0)` versus
-  `l(1,0,0,2)` are the same constants moved to different components to follow a
-  different destination write mask.
-
-Two caveats that the audit cannot remove, and which apply to the shipped
-bytecode just as much as to ours:
-
-- Both builds declare `dcl_globalFlags refactoringAllowed`, which permits the
-  driver to reassociate and to fuse `mul`/`add` into `mad`. Bit-exact results
-  were therefore never guaranteed even for the shipped bytecode across two
-  different GPUs; "same disassembly" is a stronger property than these shaders
-  ever relied on.
-
-One group that the audit caught. `CalculateInflatableVolumeNV` and
-`CalculateInflatableVolumeAMD` used to sum all sixteen per-wave partials
-unconditionally, where the DXBC sums only `min(numTrisInBlock, 512) >> 5` of
-them, predicating the unrolled adds on a counter carried in the `.w` lane. The
-partials past that count are zero except for the wave that straddles the end of
-the block, so the shipped shader drops that wave's triangles whenever
-`numTrisInBlock` is not a multiple of 32 — a rounding quirk it shares with the
-generic path's `numTrisInBlock >> 1` tree. `ReduceCenter` and `ReduceVolume`
-now take the bound from `numTrisInBlock`, as the parameter's presence in the
-signature always implied, and `dcl_temps` on the NV variant went from 19 to the
-shipped 34 as a result. This was a genuine behavioural divergence, not a
-packing artifact, and it had been mislabelled `Equivalent`.
-
-## Runtime verification
-
-The structural audit above is not a proof, so the 23 `Equivalent` groups were
-also tested at runtime: the shipped `src/dxbc/g_Flex_<Entry>.txt` blob is
-replaced with one compiled from the recovered source (`fxc -Fo`), `NvFlexRev` is
-rebuilt, and the demo's playback facility compares particle positions frame by
-frame against a baseline recorded with the original blobs. `git checkout --
-src/dxbc` restores the originals afterwards.
-
-    # A = original blobs, write mode; C = identical second run; B = one blob swapped
-    demo --dev=1 --graphics=1 --vsync=0 --windowed=640x480 --disabletweak          "--scene=<Name>" --playback-mode=write --playback-range=0,30
-
-Two things make this harder than it looks, and both change the answer:
-
-1. **Do not use `--playback-mode=read`.** Its comparison uses `eps = 1e-3`, so
-   what it reports is the frame at which a difference has *grown* past 1e-3, not
-   the frame at which one appeared. Record both sides in `write` mode and diff
-   the buffers offline at full precision instead.
-2. **The simulation amplifies.** With identical binaries, Inflatables
-   self-diverges from 1e-11 at frame 7 to 6.6e-4 by frame 53 — roughly 0.4
-   orders of magnitude per frame. A single-ULP difference seeded at frame 0
-   therefore reaches 1e-3 somewhere around frame 10-40 with no logic error at
-   all. Always record a second baseline run (`d_AC`) as the noise floor.
-   Shape Collision, Triangle Collision, Rigid8, Plastic Stack and DamBreak 5cm
-   are bit-deterministic (`d_AC` is exactly 0); Inflatables and Flag Cloth are
-   not.
-
-With the per-frame curves in hand the two signatures separate cleanly, with no
-ambiguous cases:
-
-- **Rounding class** — first nonzero delta at frame 0 at about one ULP
-  (2^-24 = 5.96e-08 relative), then smooth monotone growth. This is what
-  `refactoringAllowed` mul/add fusion produces, and it upholds `Equivalent`.
-- **Logic difference** — positions bit-identical for many frames, then a
-  discontinuous jump straight to a percent-level delta. Re-association cannot
-  produce exactly zero error for 26 frames and then 1e-2; a discrete decision is
-  being taken differently.
-
-The relative magnitude alone is **not** a sufficient discriminator, and reading
-it as one is how the `SolveShapes` reassociation defect survived a full round.
-A first-frame delta of 1.05e-07 was recorded as "rounding class" when it was in
-fact a wrong summation tree. What actually separates the two is the **frame-0
-ULP histogram** — how many values moved and by how much — which the
-`scratchpad/runtime/ulp.py` helper prints:
-
-- a reassociation in a hot path is *loud*. Swapping the last two accumulation
-  terms of `NormalizeQuat` — the smallest possible reassociation, one level —
-  moves 11630 of 192000 floats (6.06%) within frame 0 on Rigid8, with a tail to
-  85 ulp.
-- FXC lane packing is *quiet*. The non-NV `SolveShapes`, whose only remaining
-  residual is packing, moves 8 of 192000 (0.004%), every one of them by exactly
-  1 ulp.
-
-Two orders of magnitude separate them. Measure the histogram before calling
-anything "rounding".
-
-Results:
-
-| Group | Outcome |
+| Status | Count |
 | --- | --- |
-| `CollideParticles`, `TransformShapeBounds` | Bit-identical on Rigid8 and Shape Collision, both zero-noise scenes. Each was first proved live with a no-op probe. |
-| `SolveInflatableVolume`, `CalculateInflatableVolume`, `CalculateInflatableVolumeAMD` | Indistinguishable from the Inflatables noise floor, which is not zero (FP atomics). Cannot be bit-verified on any scene. The plain variant was reached with `--extensions=0`. |
-| `CalculateVorticity`, `UpdateTriangles` | Rounding class; first delta at frame 0 at 6.2e-08 to 2.1e-07 relative. `Equivalent` upheld. |
-| `SolveVelocities` | Was recorded here as rounding class at 6.2e-08. Re-tested in isolation on NVIDIA over 60 frames on Rigid8, Melting and Plastic Coarse: **bit-identical in all five channels**, with no source change. The earlier reading came from a run where another shader in the same batch carried the difference. Now `Verified`. |
-| `SolveShapes`, `SolveShapesPlasticDeformation` and their six `*NV` variants | Was recorded as rounding class at 1.05e-07. That was wrong: a real reassociation defect in `QuatMul` was hiding at exactly that magnitude. Fixed; see below. Still not bit-identical, now at the FXC-lane-packing floor. |
-| `CollideTriangles` | **Was** a logic difference; cause found and fixed (cross operand order in `SegmentIntersectsTriangle`). Now bit-identical over 60 frames. |
-| `CollideShapes` | **Was** a logic difference; two defects found and fixed (convex plane offset, and the sweep base point in four places). Now bit-identical over 60 frames. |
-| 6 `SolveShapes*NV` variants | **Now exercised.** All six run on the RTX 4050 via `--adapter=1`; see [Selecting the GPU](#selecting-the-gpu). Running them is what exposed the `QuatMul` defect. |
-| `SolveInflatableVolumeNV`, `CalculateInflatableVolumeNV`, `UpdateTrianglesNV` | Still not exercised. Reachable on NVIDIA now, but no scene in this survey dispatches them on the tested paths. |
-| `CalculateInflatableVolume` (plain) | Not exercised — the AMD variant is selected on this device. |
-| `CalculateAnisotropy`, `SmoothPositions` | Bit-identical after the harness was extended to record the smoothed positions and the anisotropy buffers, and after a real defect was fixed in `CalculateAnisotropy`. See [Recording the render-only outputs](#recording-the-render-only-outputs). |
+| `Exact` — byte-identical bytecode | **79** |
+| `Verified` — runtime bit-identical | **5** |
 
-Both collision groups are now fixed; the diagnosis is in the next section. The
-blob-size argument that was pursued for a while is recorded here because it was
-a dead end worth not repeating: the recompiled `CollideShapes` blob is 4248
-bytes smaller than the shipped one, but that is the 179-instruction gap already
-measured above at roughly 24 bytes per instruction, 159 of them `mov`s that FXC
-10.1 coalesces away. It was never evidence of missing code. Neither was the
-`min`/`max` ordering around the clamps, which was the standing hypothesis for
-two rounds and was wrong.
+(84 groups against 82 `Shaders.cfg` entries: the three
+`ComputeTotalBoundsFinalize` variants ship as one identical blob and are built
+from a single manifest entry, so two rows are aliases of a third.)
 
-### Contacts are the right observable for the collision shaders
+Nothing sits below those two. Earlier revisions of this document also used
+`Equivalent` ("every difference individually accounted for as a compiler
+artifact"), `Partial`, `Divergent` and `Complete`. They are gone, and the reason
+is worth keeping: **every group that ever carried `Equivalent` was later driven
+to byte-identical DXBC.** Each "individually accounted for" explanation turned
+out to be a source difference nobody had found yet — including three this
+document had explicitly recorded as closed and unreachable. If a new recovery
+cannot reach `Exact`, treat it as unfinished rather than inventing a status for
+it.
 
-Positions only show the *effect* of a contact, several solver stages downstream
-and after chaos has had a frame to work. `NvFlexGetContacts` exposes the direct
-output of `CollideShapes`/`CollideTriangles`, and `--playback-contacts` records
-per-particle contact counts, planes and velocities alongside the positions. The
-contact velocity's `.w` carries the shape index, so a differing contact can be
-mapped back to the shape and hence to the contact function that produced it.
+The table is checked against a live sweep, not maintained by hand. Re-run
+`tools/bytecmp.py` and cross-reference before trusting a row; the last audit
+found eleven rows understating what had been achieved and none overstating.
 
-This is what turned a six-month-old "logic difference, cause unknown" into two
-located bugs in one pass. The distinction it draws is:
+**`Verified` cannot be promoted to `Exact` by argument.** The question has been
+asked and answered by measurement: of the twenty entries carrying `Verified`
+before the last campaign, two were computing genuinely different numbers behind
+structurally clean disassembly — `SolveVelocities` summed a `dp3` over the wrong
+lane packing, and `UpdateDiffuseParticles` tested plane collisions against the
+running velocity where the shipped blob uses the entry velocity. The second sat
+at `rn = 0`, meaning register-normalised disassembly that was *textually
+identical*. Instruction-level equivalence is therefore not sufficient evidence of
+semantic equivalence, and `SolveSprings` before it made the same point: `rn = 0`
+while writing every spring delta to the wrong particle. Fifteen of those twenty
+were promoted the only way that works — by finding the source difference and
+reaching byte-identity.
 
-- **different contact COUNT** — a contact is being generated or dropped, so a
-  predicate is flipping;
-- **same count, different PLANE** — the contact is found but its normal or
-  offset is computed differently.
+### Reading the measurement
 
-`CollideTriangles` was the first kind. At frame 18 of Triangle Collision, one
-frame before positions moved at all, 57 particles had count 1 on the shipped
-side and 0 on ours, every one of them carrying the same triangle plane. The
-cause was in `SegmentIntersectsTriangle`: the recovered source computed
-`n0 = cross(cv, d)` where the DXBC puts the segment delta first, `cross(d, cv)`.
-Reversed, `s0` and `s1` invert while `s2` does not, so the three signed volumes
-no longer share a sign and the test can essentially never fire. Tunneling
-contacts were silently dropped, which stays invisible until something actually
-tunnels. With the operand order corrected the shader is bit-identical over 60
-frames on a scene whose noise floor is exactly zero.
+```
+bash tools/dxbccmp.sh <Entry>        # PASS/---- raw= rn= firstdiff= instr=
+bash tools/dxbccmp.sh <Entry> -v     # plus both diffs; '<' is shipped, '>' is ours
+python tools/bytecmp.py <outdir> <fxc-path>   # the same check across all 82 entries
+```
 
-`CollideShapes` was the second kind: same count, different plane, one particle
-at a time, and it took two fixes.
+- `rn` — differing disassembly lines with register names normalised away. This is
+  *structure*. Drive it to zero first.
+- `raw` — differing lines including register names. Drive it to zero second.
+- `firstdiff` — index of the first differing instruction, and the single most
+  informative number: everything after a divergence is misaligned, so a large
+  `raw` with a late `firstdiff` is nearly done.
+- `instr` — shipped/ours instruction counts. Parity here is a strong signal;
+  losing it is a red flag even when another number improves.
+- **A raw byte count is not a gradient.** An early version of the tool compared
+  bytes positionally, so once instruction counts shifted it saturated and once
+  scored a structurally *worse* state as better. Bytes are meaningful only as a
+  pass/fail at zero.
 
-The first was narrow. `ConvexContact` stored the margin-adjusted plane offset
-where the DXBC keeps the raw `invLength * p.w`; the adjusted one is used only
-for the ray clip. Confirmed by the stored `w` moving by exactly
-`kCollisionDistance + kCollisionThreshold`.
-
-The second was systematic, and worth stating plainly because it is invisible to
-any amount of staring at the instruction stream. **The contact functions base
-the sweep at `localStart` and march toward `localEnd`; the recovered sources
-based it at `localEnd`.** Both parametrise the same segment, so the clip test
-`enter < exit` agrees and the arithmetic decodes instruction for instruction —
-but `t` is mirrored, and the "closest feature" is then chosen relative to the
-wrong endpoint. Whenever the particle had moved, a different convex plane, box
-face or capsule axis point was selected.
-
-The tell was in the register allocation, not the opcodes: in the shipped blob
-the ray base point and the `localParticleEnd` handed to `StoreContact` live in
-*different* registers, and in ours they were the same register. Four call sites
-were affected — `IntersectSegmentAabb`, the `BoxContact` face selection,
-`CapsuleContact`'s axis projection, and `ConvexContact`'s plane distance.
-
-With all of it applied, Shape Collision, Rigid8 and Triangle Collision are
-bit-identical over 60 frames on every channel. Shape Collision exercises all six
-shape types -- sphere, capsule, box, convex mesh, triangle mesh and SDF -- so the
-sphere and SDF paths are covered by the same result.
-
-### Scenes are not all deterministic, and the noise floor must be measured per scene
-
-Three of the scenes used here are not reproducible run to run, because the
-shaders that feed them accumulate with floating-point atomics
-(`InterlockedAddFp32`), whose ordering varies:
-
-| Scene | Noise floor (same binary, two runs) |
-| --- | --- |
-| Triangle Collision | exactly zero, all channels, 60 frames |
-| Rigid8, Shape Collision, Viscosity Med, Surface Tension High, Rock Pool | exactly zero, 30-40 frames |
-| Inflatables | diverges at frame 7, 2.9e-11 growing to 3e-05 by frame 17 |
-| Flag Cloth | diverges at frame 24, 5.8e-11 growing to 5e-05 by frame 55 |
-
-Re-measured on the RTX 4050, 60 frames, all five channels, two runs per scene.
-The floor is **not** a property of the scene alone — it has to be re-established
-per device, and one scene that is deterministic on AMD is not on NVIDIA:
-
-| Scene | Noise floor on RTX 4050 |
-| --- | --- |
-| Rigid8, Melting, Plastic Coarse, Plastic Very Coarse | exactly zero |
-| Viscosity Med, Surface Tension Med, Triangle Collision, Shape Collision | exactly zero |
-| Plastic Stack | exactly zero |
-| Rigid2 | diverges at frame 59, 3.6e-07 — usable only below ~55 frames |
-
-Measure this before interpreting any result. The inflatable group
-(`SolveInflatableVolume`, `CalculateInflatableVolume`, `CalculateInflatableVolumeAMD`)
-produces a difference whose onset frame and magnitude are *indistinguishable*
-from the scene's own noise floor, which is the strongest statement obtainable
-there -- they cannot be bit-verified on any scene, by construction. An earlier
-round recorded this group as "bit-identical"; that was measured without a noise
-floor and is withdrawn. Flag Cloth is likewise unusable for judging
-`CollideTriangles`; Triangle Collision is the scene to use.
-
-### Constants are invisible to every disassembly comparison
-
-FXC prints float literals to six decimals and 3Dmigoto to eight, so two
-different constants can disassemble to the same text. `1e-9` and `1e-15` both
-print as `l(0.000000)`. `CalculateAnisotropy` was reconstructed with a Jacobi
-convergence threshold of `1e-9` where the shipped blob has `1e-15`
-(`0x3089705F` versus `0x26901D7D`), and **no** text-level check could see it:
-the two disassemblies agreed instruction for instruction, operand for operand,
-including the declaration block and `dcl_temps`.
-
-The tell was behavioural, not textual. Two reconstructions with very different
-register allocation and scheduling produced bit-identical output *to each other*
-while both differed from the shipped blob in exactly the same way. Scheduling
-noise cannot do that; only a semantic difference can.
-
-Compare the constant bits directly, from the `SHEX` chunk of both blobs —
-`scratchpad/constsweep.py` does this for every entry in `Shaders.cfg`. Sweeping
-all 82 entries found this as the only value-level mismatch in the tree. Ten
-shaders differ in the *count* of a shared constant (`1.0`, `-1.0`, `0.3333`),
-which is instruction scheduling, not a different number. Run this check on any
-shader before calling it `Exact` or `Verified`: byte-identical disassembly does
-not imply byte-identical constants.
-
-A too-loose threshold is invisible to inspection for a second reason: it is
-correct on well-conditioned input and only diverges when the sweep would have
-taken another rotation. The symptom was that eigenvalues agreed to ~7e-07
-relative while ~20% of eigenvectors were completely different — a discrete
-decision inside one dispatch, not chaos across frames.
-
-**After the fix, the eigenvector difference is zero.** `CalculateAnisotropy`
-was re-tested in isolation (its blob swapped in alone, so nothing upstream could
-contaminate the result) on the RTX 4050 over 60 frames on Melting, Viscosity Med
-and Surface Tension Med. All three anisotropy channels are bit-identical in
-every frame, and so are `positions` and `smoothPositions`. The channels are
-live, not vacuous: 206666 of 262144 floats nonzero on Viscosity Med, 196608 of
-327680 on Surface Tension Med, 33180 of 33180 on Melting. There is no residual
-eigenvector disagreement of any size, degenerate-basis or otherwise — the
-~20% figure above describes the state *before* the `1e-15` threshold was
-restored.
-
-One caveat when reading a combined run: on Melting the anisotropy channels
-*do* diverge when the whole candidate set is swapped in at once. That is
-downstream, not `CalculateAnisotropy` — Melting dispatches `SolveShapes128NV`,
-whose positions differ from frame 5, and the anisotropy of a different point
-cloud is legitimately different. Isolating the shader is what separates the
-two, and it is why single-shader runs are worth their cost.
-
-### Recording the render-only outputs
-
-`SmoothPositions` and `CalculateAnisotropy` write `mSmoothPositionsOriginal`
-and the anisotropy buffers, which `NvFlexGetParticles` never returns, and
-`mSortedPositions`, which is rewritten from `mPositions` at the top of every
-substep. They are therefore invisible to a positions-only harness. The demo
-already reads both back (`NvFlexGetSmoothParticles` / `NvFlexGetAnisotropy` in
-`UpdateScene`), but only under `!g_interop && g_drawEllipsoids`.
-
-`PlaybackContext` now records five channels per frame — `positions`,
-`smoothPositions`, `anisotropy1..3` — behind a `FPB2` magic, and `UpdateScene`
-fetches the extra buffers whenever playback is active, independent of the
-render flags. Legacy positions-only archives still load; the reader dispatches
-on the magic. Every channel is clamped to the live particle count, because the
-four render buffers are allocated at `maxParticles` and their tails are never
-written.
-
-Two things this makes possible, both of which mattered:
-
-- A **liveness** column. `anisotropy1..3` are zero on a scene with no fluid, and
-  `positions` is zero on a scene that has not emitted yet — on `Adhesion` both
-  are all-zero, so a "no difference" verdict there is vacuous. The differ prints
-  nonzero counts per channel and flags this.
-- A **noise floor of exactly zero**. Neither shader feeds back into the
-  simulation, so unlike the position-based test there is no Lyapunov
-  amplification: any difference is the shader's own. Confirmed empirically — a
-  no-op `SmoothPositions` leaves `positions` bit-identical for 40 frames while
-  moving `smoothPositions` by 2.63.
-
-Verified bit-identical over `Viscosity Med` (40 frames), `Surface Tension High`
-and `Rock Pool` (30 frames each), all five channels, against a baseline noise
-floor of zero.
-
-The nine `*NV` variants used to be unreachable on any GPU: `src/Library.cpp`
-hard-coded `mSMCount = -1`, which forced `enableExtensions` false on NVIDIA and
-zeroed `mIsSHFLSupported` / `mIsFP32ATOMICSupported`; on AMD the NV branches are
-unreachable by vendor id anyway. Both device backends already queried the count
-through `NvAPI_GPU_GetShaderSubPipeCount` and stored it in `m_SMcount`, but never
-exposed it. It is now carried on `FlexDeviceCapabilities::smCount` and read by
-`Library.cpp`, so the NV paths are selected on NVIDIA hardware. Combined with
-`--adapter=N` below, the six `SolveShapes*NV` variants have since been run and
-are no longer unexercised; `SolveInflatableVolumeNV`,
-`CalculateInflatableVolumeNV` and `UpdateTrianglesNV` still are.
-
-### Selecting the GPU
-
-`Library::Init` refuses a null `renderDevice`, so Flex never creates an adapter
-of its own — it is always handed the demo's D3D device. `NvFlexInitDesc::deviceIndex`
-is therefore dead in this implementation (nothing in `src/` reads it), and
-`-device=N` cannot move the solver. The adapter is decided where the *renderer*
-is created, which used to be a hardcoded `AppGraphCtxCreate(0)` in
-`demoContextD3D11.cpp` and `demoContextD3D12.cpp`.
-
-`--adapter=N` now drives that, through `RenderInitOptions::adapterIndex`, for
-both the D3D11 and D3D12 back ends. Every run prints the full adapter list and
-marks the selection, and `NvFlexGetDeviceName` confirms what Flex actually got:
-
-    demo --dev=1 --graphics=1 --adapter=1 --scene="Rigid8" ...
-      adapter 0: AMD Radeon 780M Graphics (vendor 0x1002, 418 MB dedicated)
-      adapter 1: NVIDIA GeForce RTX 4050 Laptop GPU (vendor 0x10DE, 5923 MB dedicated)   <= selected
-      adapter 2: Microsoft Basic Render Driver (vendor 0x1414, 0 MB dedicated)
-    Compute Device: NVIDIA GeForce RTX 4050 Laptop GPU
-
-Interop stays enabled because render and compute are the same device. Pair it
-with `--extensions=0` to force the non-NV kernels on an NVIDIA part, which is
-how the plain `SolveShapes` was isolated from `SolveShapesNV`.
-
-### Reaching every `SolveShapes` variant
-
-`Solver::SolveShapes` picks among six kernels on two predicates: whether the
-scene supplies plastic thresholds and creeps, and `avgWorkload = mNumRigidIndices
-/ mNumRigids` bucketed at `<=32`, `33..127`, `>=128`. The stock scenes cover four
-of the six; the two coarse plastic buckets were unreachable, so `Plastic Coarse`
-and `Plastic Very Coarse` were added to `main.cpp` (a plastic bunny at
-`mClusterSpacing` 3.0 and 8.0). Measured coverage:
-
-| Kernel | Scene | rigids | indices | avgWorkload |
-| --- | --- | --- | --- | --- |
-| `SolveShapes32NV` | Rigid2, Rigid4, Bananas, Game Mesh Rigid | 1000 | 8000 | 8 |
-| `SolveShapesNV` | Rigid8, Soft Bunny, Soft Teapot | 1000 | 48000 | 48 |
-| `SolveShapes128NV` | Melting | 3 | 8295 | 2765 |
-| `SolveShapesPlasticDeformation32NV` | Plastic Bunnies, Plastic Stack | 1176 | 20662 | 17 |
-| `SolveShapesPlasticDeformationNV` | **Plastic Coarse** | 70 | 6648 | 94 |
-| `SolveShapesPlasticDeformation128NV` | **Plastic Very Coarse** | 10 | 6618 | 661 |
-
-`SolveShapes` and `SolveShapesPlasticDeformation` (non-NV) are reached by adding
-`--extensions=0` to any of the above.
-
-### The audit normaliser hides every declaration, including two that are semantic
-
-`cmp.sh` strips all `dcl_*` lines before diffing, because bindings legitimately
-differ between the shipped blob and ours. Two of those lines are not bindings:
-
-- `dcl_thread_group` is the `[numthreads]` of the kernel. Get it wrong and the
-  reduction reads lanes that were never written.
-- `dcl_tgsm` is the groupshared allocation the reduction accumulates into.
-
-Neither would show up anywhere else in the structural audit, and neither is a
-constant, so the constant-bit sweep cannot see them either. Checked explicitly
-for all eight `SolveShapes` variants:
-
-| | shipped | ours |
-| --- | --- | --- |
-| `SolveShapes`, `SolveShapesNV`, both `PlasticDeformation` 64-wide forms | `64,1,1` | `64,1,1` |
-| `SolveShapes32NV`, `SolveShapesPlasticDeformation32NV` | `32,1,1` | `32,1,1` |
-| `SolveShapes128NV`, `SolveShapesPlasticDeformation128NV` | `128,1,1` | `128,1,1` |
-| `dcl_tgsm` count, plain variants | 5 | 5 |
-| `dcl_tgsm` count, plastic variants | 7 | 7 |
-
-Comparing the complete declaration block, the only difference anywhere in the
-eight is `dcl_temps 51` against our `52` on `SolveShapesNV` and
-`SolveShapes128NV` — the temporary-register high-water mark, which is register
-allocation. UAV, SRV, constant-buffer and `dcl_globalFlags` declarations are
-identical everywhere. Re-run this check before trusting `cmp.sh` on any shader
-with a groupshared reduction.
-
-### Which kernel is actually live, proved rather than assumed
-
-A blob swap replaces bytecode only; the variant is chosen by `Solver::
-SolveShapes` in C++, which is the same code on both sides of every A/B. So the
-two sides always dispatch the same entry point by construction. What that does
-*not* establish is which entry point, and a differential test against a kernel
-that never runs reports "no difference" for the wrong reason.
-
-Established by stubbing one blob with a no-op and checking whether the
-simulation moves:
-
-| Stubbed | Scene | Flags | Result | Conclusion |
-| --- | --- | --- | --- | --- |
-| `SolveShapes` | Rigid8 | `--extensions=0` | diverges 2.6e-03 at frame 0 | non-NV kernel is live |
-| `SolveShapes` | Rigid8 | `--extensions=1` | bit-identical, 8 frames | non-NV kernel is *not* used |
-| `SolveShapesNV` | Rigid8 | `--extensions=1` | diverges 2.6e-03 at frame 0 | NV kernel is live |
-| `SolveShapesNV` | Rigid8 | `--extensions=0` | bit-identical, 8 frames | NV kernel is *not* used |
-| `SolveShapesNV` | Melting | `--extensions=1` | bit-identical, 8 frames | Melting is the 128 bucket |
-| `SolveShapes128NV` | Melting | `--extensions=1` | diverges 4.0e-03 at frame 0 | 128 kernel is live |
-| `SolveShapes128NV` | Rigid8 | `--extensions=1` | bit-identical, 8 frames | Rigid8 is the 64 bucket |
-| `SolveShapes128NV` | Melting | `--extensions=0` | bit-identical, 8 frames | no NV kernel on the non-NV path |
-
-The pattern is exactly complementary in both directions, so `--extensions=0`
-really does disable the NV path rather than merely changing a flag, and the
-avgWorkload bucketing selects what the table above claims. Note that a
-`--extensions=0` run must be compared against a `--extensions=0` baseline; the
-first attempt at the last row compared against an `--extensions=1` capture and
-produced a spurious difference.
-
-### How much do NVIDIA's own kernels disagree with each other?
-
-This is the most useful number for deciding what a residual means. The NV and
-non-NV `SolveShapes` kernels compute the same quantity by different reductions.
-Both are NVIDIA's shipped bytecode, neither is ours. On Rigid8 at frame 0:
-
-| Comparison | Floats differing of 192000 | Worst |
-| --- | --- | --- |
-| shipped `SolveShapesNV` vs shipped `SolveShapes` | 91775 (47.8%) | 411 ulp |
-| **our** `SolveShapesNV` vs shipped `SolveShapesNV` | 141 (0.073%) | 49 ulp |
-| **our** `SolveShapes` vs shipped `SolveShapes` | 8 (0.004%) | 1 ulp |
-
-Our reconstruction differs from the shipped blob by roughly 650x less than two
-shipped kernels differ from each other. Whatever tolerance the original design
-was built to accept, the remaining residual is far inside it. That is an
-argument about *significance*, not about *correctness*, and it does not promote
-anything to `Verified` — but it does mean the residual cannot be a defect that
-matters to the simulation, only one that matters to bit-exactness.
+## Reproducing the shipped bytecode
 
 ### FXC 6.3.9600.16384, fetched locally
 
@@ -845,324 +326,333 @@ would silently give 10.x codegen. The check that this is working: any `-Fc`
 listing must carry `Generated by Microsoft (R) HLSL Shader Compiler
 6.3.9600.16384`, exactly as the shipped `.asm` files do.
 
-### The compiler was never the problem
+### The FXC 6.3 codegen levers, as measured
 
-The previous revision of this document named FXC 6.3 as the one remaining lever
-on the `SolveShapes` family, on the reasoning that scalar-versus-packed
-component chains and negate-modifier-versus-`mul l(-1.0)` are codegen choices
-that differ between 6.3 and 10.1. **That was wrong, and the measurement is
-unambiguous.** Compiling every recovered source with both compilers and
-comparing the SHEX chunk byte for byte:
+These were established empirically against the shipped blobs and are the
+transferable result of the campaign. FXC's *shape* is far more sensitive to
+source spelling than its *arithmetic* is.
 
-    code chunk identical between 6.3 and 10.1 : 66 of 66
-    code chunk different                      :  0
+- **Operand order.** `mul` emits its operands in **reverse** source order; `mad`
+  keeps source order. For `P + Q`, the **second** addend becomes the base `mul`.
+  Commutative `add` operands also come out reversed, which is why `NormalizeQuat`
+  must be written `sq.x + sq.y` to produce `add r3.w, r4.y, r4.x`.
+- **Parenthesisation decides mad-contraction.** `a*b + c*d + e*f` flat is a
+  different chain -- and different rounding -- from `a*b + (c*d + e*f)`.
+- **`cross()` intrinsic vs component-wise.** The intrinsic packs three-wide;
+  component-wise yields a two-wide pair plus a scalar. This matters *semantically*
+  when the result feeds a `dot`, because the lane packing sets the `dp3`
+  summation order -- that is the `CalculateVorticity` defect. Note the causation:
+  the *packing* selects the summation order; the `dot`'s own argument order does
+  not (see "What is not source-controlled" below).
+- **Hoisting the *last* product of a chain into a named temp changes lane
+  assignment ~30 instructions upstream.** `float zz = a.z * b.z;` in `QuatMul` is
+  what moves `ExtractRotation`'s 4-wide cross from lanes `y,z,w` to the shipped
+  `x,z,w`. Hoisting any *earlier* product fails, or lets FXC fold the hoisted mul
+  into the leading three-wide `mul` and lose an instruction. Only the last term
+  is safe.
+- **Concatenated versus interleaved operand layout.** Two two-wide products
+  written as separate terms are laid out concatenated -- group 1 at lanes (x,y),
+  group 2 at (z,w). Materialising them as one four-wide multiply read back
+  stride-two states the interleaved layout the shipped blob uses:
 
-Not one shader in this tree compiles differently under the two compilers. FXC
-10.1 was never introducing anything, and no result obtained with it needs
-revisiting. Every difference that remains against the shipped blobs is a
-difference in **our source**, not in the toolchain -- which is better news than
-the alternative, because a source difference is reachable and a compiler
-difference would not have been.
+  ```hlsl
+  float4 t = a.yzzx * b.zyxz;
+  float2 xy = v.xy + t.xz - t.yw;
+  ```
 
-### Compare bytes, not text
+  FXC re-fuses `t` into the two mads, so the instruction count is unchanged and
+  the arithmetic is bit-identical; only the operand lanes move. This was the
+  final two-instruction difference on all eight shaders.
+- **`inout` on a parameter forces a copy that LICM hoists.** Declaring
+  `ReduceSum`'s thread index `inout uint` produces the shipped
+  `mov rN, vThreadIDInGroup.x` in each loop preheader, which in turn keeps
+  `and l(31)` / `ishr l(5)` inside the loop body instead of hoisted to the
+  prologue. FXC evaluates expressions over *input registers* once in the
+  prologue but leaves expressions over a *temp* where they are written.
+- **Statement placement controls load order and scheduling.** Binding
+  `rotations[rigid]`, `float(count)`, `2*w*w-1` or `addr = idx << 4` before the
+  expression that consumes them moves the corresponding load or `ishl` to the
+  shipped position.
+- **Defeating load CSE.** Two loads of the same index survive only if the two
+  uses are spelled differently -- `localNormal.xyz` for one term and
+  `localNormals[entry].xyz` for the others. Routed through one function parameter
+  FXC always merges them.
+- **Integer comparisons reverse their operands** the same way `mul` and `add` do.
+  `prevCellId != cellId` emits `ine cellId, prevCellId`; swapping the source
+  operands was the sole change that closed `CreateGrid`. `mad` and `dp3` keep
+  source order.
+- **`x == false` versus `!x` decides whether a mask test is materialised.** With
+  `bool b = (phase & MASK) != 0;`, spelling the branch `if (!b)` lets FXC fold the
+  test into the branch (`and` + `if_z`); `if (b == false)` keeps an explicit
+  `ine rN, rN, l(0)`. Each occurrence is +1 instruction. The `!= 0` in the
+  *initialiser* does not produce the `ine` -- only the compare in the branch
+  condition does. Two occurrences took `CalculateVorticity` from 55 to the
+  shipped 57.
+- **Ternary arm order picks `ult` versus `uge`.** `x < n ? keep : sentinel` emits
+  `ult` with `movc` sources in (keep, sentinel) order; `x >= n ? sentinel : keep`
+  emits `uge` with them reversed. Match the shipped opcode by choosing the arm
+  order, not by negating operands.
+- **Splitting a wide op into a narrower one plus a scalar restores a missing
+  instruction.** This is the counterpart of the interleaved-layout lever above,
+  and it fixes *counts*, not just swizzles. A wide vector op followed by a
+  reduction, or a per-component `cond ? a : b` over a vector, folds into fewer
+  instructions than a shipped blob that interleaves them; writing the last lane
+  as a separate scalar placed *between* the other operations in source order
+  restores parity. `cross(a,b)` compiles to two three-wide instructions where the
+  shipped blob has four. This closed all three radix sort entries,
+  `CalculateMortonCodes`, and `SolveVelocities` (139 to 142 instructions and raw
+  12 to 0 in one edit). **The statement order inside such a helper is
+  load-bearing**: in `TransformShapeBounds` the scalar `tw = a.y*b.x` must sit
+  *after* the two-wide mad, not before it, or the count comes out one short.
+- **A duplicated lane in a shipped wide op means the source spells that value
+  twice, from different expressions.** FXC CSEs identical spellings, including
+  through `float4` constructors and element-wise constructors; only an
+  independently derived expression survives -- `(v1+v2+v3).z` alongside
+  `(v1.zyx+v2.zyx+v3.zyx).x`. Probe: `UpdateTriangles`, raw 72 to 30; the same
+  spelling in any of four forms always dedups back to 72.
+- **`mad` inherits the operand order of a CSE'd sibling `mul`.** Given
+  `float w = q2 * k;` and a later `q2 * k + acc`, the `mad` takes the
+  *initialiser's* order regardless of how the `mad` line is written. Fix the
+  initialiser.
+- **Binding a product to a local before accumulating it fixes operand-pack
+  scheduling.** `acc += w * p;` lets FXC interleave the next pack with the
+  current `mad`; `float4 t = w * p; acc += t;` forces every pack to be
+  materialised before the first `mad`. FXC re-fuses to the identical `mad`, so it
+  is free. Seven other spellings failed on `CalculateAnisotropy`; only splitting
+  the multiply from the add worked.
+- **Naming an intrinsic used in one arm of a ternary hoists it above the
+  compare.** FXC sinks an intrinsic that is live in only one arm to *after* the
+  compare; binding it first emits it before. One `float v1InvNorm =
+  rsqrt(v1Norm);` closed `Predict`, fixing six raw lines and every downstream
+  lane choice. This is the statement-placement lever extended across a `?:`
+  boundary into conditionally live code.
+- **A function-parameter boundary blocks re-fusion where nothing else will.** In
+  `CollideTriangles`, `SegmentIntersectsTriangle` recomputed `end - start`
+  internally, so FXC hoisted its own copy to the wrong place; passing the delta
+  in as a parameter dropped raw from 354 to 54, the single largest raw win in the
+  project. Where a helper recomputes a value the caller already has, pass it.
+- **Where a function's body is emitted is itself a lever.** The shipped
+  `CollideTriangles` does its per-shape transform setup in the caller's loop, not
+  in the traversal function; the `inout int stack[40]` copy-in is 78 `mov`s
+  emitted at the call site, and its position gives the function boundary away.
+  Splitting the traversal out so the setup precedes it moved raw 580 to 398.
+- **Declaration order breaks coalescing tie-breaks.** With `result` declared
+  before `sp`, FXC emits `mad sp, ...` / `mov result, sp`; declaring `sp` first
+  emits the shipped `mad result, ...` / `mov sp, result`. Nothing else moved it.
+- **The lane order of a packed comparison follows the *declaration* order of
+  named `bool`s**, not the order the masks were extracted or first used. Hoisting
+  `bool ea = a != 0; bool eb = b != 0;` in the desired order before the loop pins
+  the pack, at zero instruction cost.
+- **A flat left-fold reproduces a shipped or-chain.** `any(A) || any(B)` written
+  as a six-term flat chain -- `a.x||a.y||a.z` bound, then `that||b.x||b.y||b.z` --
+  produces the shipped fold and keeps the two `lt`s apart.
 
-With the shipping compiler in hand, the disassembly text can be dropped from the
-comparison entirely. The SHEX chunk is the executable bytecode; if it matches,
-the source reproduces the shader, with nothing left to interpret. This is
-strictly stronger than `cmp.sh`, and it costs less.
+### What is *not* source-controlled
 
-It also corrects the text comparison in both directions. The nine
-`CalculateBounds*` shaders were recorded as *not* exact on a 4-line diff. Those
-four lines are `FLT_MAX`: 3Dmigoto and FXC 10.1 print it as
-`340282346638528859811704183484516925440.000000`, FXC 6.3 as
-`340282346638528860000000000000000000000.000000`. Same bits, different printer.
-All nine are byte-identical. Conversely, a text-`Exact` verdict on the BVH and
-radix groups was only ever comparing against blobs the tool had resolved by
-name, and the naming is not uniform (`g_Flex_`, `g_bvh_`, `g_` + capitalised
-entry) -- a resolver bug that silently reported "missing" as "fine".
+Equally important, and each disproven by measurement rather than assumed. These
+bound the search space: when a residual is one of these, no spelling will reach
+it and the effort belongs elsewhere.
 
-`scratchpad/bytecmp.py` runs the whole sweep. Current state, all 82 manifest
-entries, zero compile failures:
+- **`dp3`/`dp4` summation order.** FXC canonicalises the reduction to ascending
+  lane order of whatever packing it chose, so `dot()`'s argument order does not
+  select it. It is reachable only through a permute *before* the reduction. This
+  corrects a reading of the operand-order lever above: `dp3` keeping source order
+  is about which register is the first *operand*, not about the order the lanes
+  are summed. The `SolveVelocities` defect had to be fixed with a `float4`
+  repack (`vorticityGradient.yzzx`) precisely because reordering the `dot` could
+  not reach it.
+- **A pure swizzle rewrite.** Passing `geometry[idx].yzxw` and rewriting every
+  case body through rotated accessors -- a literal statement of the shipped lane
+  layout -- compiled byte-identical to the unrotated source. FXC normalises
+  source lane spelling away. Lanes move only when *what is live* or *what wide op
+  is materialised* changes, which is why the `SolveShapes` cross permutation
+  yielded to a four-wide multiply and not to any respelling.
+- **Integer loop-carried register packing.** Rewriting loop state as
+  `int3 it = int3(...)` with every `continue` rewriting all components -- exactly
+  what the shipped `CollideParticles` does -- was fully scalarised, instruction
+  for instruction identical to scalar source. Packing is decided after
+  scalarisation.
+- **Whether an integer cbuffer read is hoisted.** Substituting three *different*
+  cbuffer fields into the same compare produced identical prologue `mov`s and
+  identical instruction counts; meanwhile the same field read inline three lines
+  below in the same basic block is *not* hoisted. The hoist is positional and
+  field-independent, so the CSE-defeat rule cannot reach it -- there is only one
+  use to spell.
+- **Operand order of a vector-times-broadcast-scalar `mul` whose operands share a
+  register.** Swapping `v * s` to `s * v` there is byte-identical; the printed
+  order is a register-allocation consequence. Do not chase those.
+- **`precise`.** Tried as a lane-placement lever on a duplicated scalar; it
+  perturbs the whole shader (raw 30 to 59, and +1 instruction) rather than
+  pinning the pack. It is not a codegen lever.
 
-| | count |
-| --- | --- |
-| full-file byte-identical, container included | 1 (`radixSort2CS`) |
-| SHEX chunk byte-identical | 46 |
-| **reproduce the shipped bytecode exactly** | **47 of 82** |
-| code chunk differs | 35 |
+### Dead ends, recorded so they are not re-run
 
-Of the 35, ten produce an instruction stream of exactly the shipped length,
-which bounds the residual to operand encoding -- register allocation -- rather
-than to a different program. Those are the ones worth attacking first:
+Roughly sixty rounding-neutral variants were measured and rejected across the
+campaign. The ones worth naming: binding `a.x*b.x` to a temp or putting the `w`
+chain before `z` (FXC folds the mul into the leading four-wide `mul` and *loses*
+an instruction -- a better `rn` with worse structure); a fully vectorised
+`QuatMul` (seven instructions where the shipped blob has ten); component-wise or
+swizzled spellings of `ExtractRotation`'s numerator cross; deriving a warp index
+from `index & (BLOCK-1)` or `index % BLOCK` (FXC rewrites to `ubfe`/`ishr` and
+inserts groupshared bounds clamps absent from the original -- this one reached the
+exact shipped instruction count while corrupting structure, and is the clearest
+false optimum in the project).
 
-| Source | code bytes | differing dwords |
-| --- | --- | --- |
-| `CreateGrid` | 540 | 2 |
-| `SolveSprings`, `SolveSpringsNV` | 2436 | 4 |
-| `CalculateAnisotropy` | 6660 | 13 |
-| `ContinuousShockPropagation` | 916 | 18 |
-| `Predict` | 968 | 22 |
-| `SolveInflatableVolume`, `SolveInflatableVolumeNV` | 3420 / 3976 | 24 |
-| `UpdateDiffuseParticles` | 2944 | 81 |
-| `CollideTriangles` | 16780 | 2175 |
-| `ComputeTotalBoundsAMD`, `ComputeTotalBoundsGroupAMD` | 3404 / 3460 | (same length) |
+### Method notes
 
-`CreateGrid` is two dwords from exact.
+- Drive `rn` (register-normalised distance) to zero first, then `raw`, then
+  bytes. `firstdiff` -- the index of the first differing instruction -- is the most
+  informative single number, because everything after a divergence is misaligned.
+- A raw byte count is **not** a gradient. An early version of the tool compared
+  bytes positionally, so once instruction counts shifted it saturated; it once
+  scored a structurally worse state as better. It is meaningful only as a
+  pass/fail at zero.
+- Prefer lower `raw` with exact instruction parity over marginally lower `rn`: a
+  single displaced instruction is counted twice in `rn`.
+- Hypotheses cost nothing when tested on throwaway copies compiled with the same
+  FXC invocation; only verified-better edits need touch the real file.
 
-A byte deficit is **not** a missing-instruction count, and reading it that way
-was a mistake worth recording. The `SolveShapes` family is 60 to 276 bytes short
-of the shipped stream, which looked like ours emitting a shorter program. It is
-not: the non-NV variant emits **383 instructions against the shipped 383**. The
-deficit is operand encoding — a `mul` against a four-component literal encodes
-larger than a `mov` with a negate modifier. The full opcode delta is
+## The hardest case: the cross lane permutation
 
-    mul -5    mov +4    mad +2    ld_structured -1
+Only one episode from the DXBC-equivalence work is worth keeping in full, because
+it is the one that generalises. The eight `SolveShapes` /
+`SolveShapesPlasticDeformation` variants had resisted for a long time, and after
+the obvious levers they all converged on a single residual — two instructions,
+byte-for-byte the same in every one of the eight:
 
-and every term is accounted for by the packing classes already documented: three
-`mul l(±1.0)` become three negate-modifier `mov`s in `RotateBasis`, two cross
-products go from a two-wide-plus-scalar pair to one three-wide pack (`mul -2`,
-`mad -2`), `QuatMul` scalarises (`mad +4`), and one duplicated `t7` load folds
-away. Nothing is unattributed, and every class is bit-exact per component.
+```
+<  mad r5.xz, r4.xxzx, r2.zzxz, r5.xxzx      shipped reads r4.z then r4.y
+>  mad r5.xz, r4.xxyx, r2.zzxz, r5.xxzx      ours reads r4.y then r4.z
+```
 
-Which leaves a genuine loose end, stated plainly because the alternative is to
-invent an explanation: if every per-component chain is bit-exact, the output
-should be bit-identical, and on Rigid8 eight floats of 192000 still differ by
-one ulp. Either one of those "bit-exact" claims is wrong somewhere, or something
-outside the compared region differs. It is small and it is unexplained, and
-those two facts should be held together rather than one used to dismiss the
-other.
+In `ExtractRotation` the numerator is `cross(r0,c0) + cross(r1,c1) +
+cross(r2,c2)`. FXC emits it as one 4-wide `mul`/`mad -r` pair with a duplicated
+lane, and the two builds packed it differently: shipped put the float3 in lanes
+`x,z,w` holding components `(y,z,x)`; ours in `y,z,w` holding `(x,y,z)`. That one
+rotation dictated the `dp3` swizzle, how much of `QuatMul` could be vectorised,
+and the operand order in `NormalizeQuat`.
 
-### The BVH and radix-sort groups, settled at the byte level
+**Three wrong diagnoses were reached before the right one**, and each looked
+convincing:
 
-Both groups carried `Complete` — reviewed against the DXBC, never round-tripped.
-The byte sweep round-trips them, and they come out better than the status
-implied. Nineteen of the twenty-two bounds/BVH/sort entries reproduce the
-shipped bytecode exactly, `radixSort2CS` including its container.
+1. *"FXC chooses the packing from the consumer side."* Reached after twelve
+   producer-side spellings of the cross sum failed to move it. It sent the next
+   attempt at `omega`, `angle`, `axis` and the loop tail, which also failed.
+2. *"It is a post-vectorisation tie-break between two lanes holding the same SSA
+   value."* This one is nearly true and is the most dangerous kind of wrong: the
+   4-wide cross really does write component Z into both lane `y` and lane `z`, so
+   `a.z` genuinely has two valid homes. The conclusion drawn — that the choice is
+   made after vectorisation and so is unreachable from HLSL — was wrong.
+3. *"Not reachable from HLSL."* Recorded as a conclusion with roughly sixty
+   measured variants behind it. It survived one further round of searching before
+   being disproved.
 
-Neither group can have contributed to any runtime discrepancy measured in this
-project, for a reason stronger than "they look fine": `apply.sh` restores
-`src/dxbc` and then overwrites only the entries named on its command line, and
-no BVH or sort entry was ever named. Every differential run in this document
-executed NVIDIA's own bounds, BVH and sort bytecode on both sides. They were
-never a variable.
+The actual mechanism is a **layout** decision, made from the source:
 
-What remains open, and what it is worth:
+> The two two-wide cross terms form a four-element operand set from `a`. Written
+> as separate terms, FXC lays them out **concatenated** — group 1 at lanes (x,y),
+> group 2 at (z,w). The shipped blob lays them **interleaved** — group 1 at (x,z),
+> group 2 at (y,w). Both hold the same four values, which is exactly why `rn` was
+> already 0 and the producing cross was already byte-identical; the only visible
+> trace was two read swizzles.
 
-| Entry | Difference | Assessment |
-| --- | --- | --- |
-| `CalculateMortonCodes` | ours packs the three interleave masks into one three-wide `and`; the shipped blob uses a two-wide `and` plus a scalar `and` | Integer bit masks, same masks, same values. Inert. |
-| `ComputeTotalBoundsAMD`, `ComputeTotalBoundsGroupAMD` | identical instruction-stream length, bytes differ | The only genuinely open items. AMD-only by vendor id, so unreachable on the RTX 4050; reachable on the Radeon 780M with `--adapter=0`. |
-| `radixSort1CS`, `radixSort3CS`, `radixSortBlockCS` | 92 to 128 bytes | Integer throughout. A sort defect would reorder particles, which is a discrete change and would surface as a jump, not as drift. |
+Materialising the products as one four-wide multiply read back stride-two states
+the interleaved layout directly:
 
-Worth keeping in mind for the sort in particular: it feeds `InterlockedAddFp32`
-accumulation order, so a *different but still correct* permutation would change
-results without being a bug. That is an argument for testing it against a
-zero-noise scene rather than for reasoning about it.
+```hlsl
+float4 t = a.yzzx * b.zyxz;
+float2 xy = v.xy + t.xz - t.yw;
+```
 
-### When "it is within the ulp band" is a reason to stop
+FXC re-fuses `t` into the two mads, so the instruction count does not change and
+the arithmetic is bit-for-bit identical; only the operand lanes move. That closed
+all eight shaders.
 
-It is a reason to stop when the mechanism producing the difference is known and
-continuous. It is not a reason to stop on magnitude alone, and this project has
-the counter-examples to prove it: of the four defects found, three sat inside
-the rounding band while being discrete errors. `CalculateAnisotropy` agreed to
-~7e-07 on eigenvalues with 20% of eigenvectors wrong. `CollideTriangles`
-silently dropped every tunneling contact. `CollideShapes` based four sweeps at
-the wrong endpoint. None of those is an epsilon story, and all three would have
-passed a magnitude test.
+Two lessons worth more than the fix:
 
-The distinction that actually matters is continuous versus discrete. Epsilon
-amplification explains smooth drift from frame 0. It does not explain a branch
-taken the other way, a contact selected instead of another, or a different
-BVH topology — and those are what the four defects were. So the test to apply is
-not "how big is it" but "do I know the mechanism, and is it continuous?" Where
-the mechanism is identified and continuous — the `SolveShapes` packing residual,
-now attributed opcode by opcode — accepting it is a reasonable engineering
-judgement, and the 650x gap to the disagreement between two *shipped* kernels
-says the simulation cannot tell the difference. Where it is not identified,
-magnitude is not evidence.
+- **A difference that leaves `rn` at zero can still be source-controlled.**
+  Register-normalised distance deliberately erases swizzles, so a pure layout
+  difference is invisible to it. When `rn` is 0 and `raw` is not, read the raw
+  diff rather than assuming register allocation.
+- **"Not reachable from HLSL" is a claim that needs the same evidence as any
+  other.** Sixty failed variants are evidence about the variants tried, not about
+  the search space. Every such conclusion in this document's history has been
+  overturned.
 
-### Closing the ledger: the seventeen that had only structural evidence
+## The five that did not close, and exactly why
 
-Seventeen entries had neither byte-exactness nor any runtime test. That is the
-evidence class this project has repeatedly shown to be insufficient, so they
-were tested as a batch. Two of the seventeen were wrong.
+Five entries remain `Verified`. Each was driven as far as measurement allowed and
+is recorded here so the same ground is not covered twice. All five have **exact
+instruction parity**; none has a known arithmetic difference.
 
-**Fifth defect -- `CalculateVorticity`.** The cross product was written in the
-swizzled form `v10.yzx * q10.zxy - q10.yzx * v10.zxy`. That form makes FXC keep
-the separation vector `d01` in rotated lanes, and `d01` also feeds
-`dot(d01, d01)` -- so the rotation changes which lanes the `dp3` sums and
-therefore the order of the summation:
-
-    shipped: add r4.xyzw, r0.zyxz, -r4.zyxz   dp3 r4.yzwy  ->  dy^2 + dx^2 + dz^2
-    ours:    add r4.xyz,  r0.yzxy, -r4.yzxy   dp3 r4.xyzx  ->  dy^2 + dz^2 + dx^2
-
-Rewriting the cross component-wise -- the `CrossExplicit` pattern already used
-in `CollideTriangles` and `CollideShapes` -- restores the shipped lane
-assignment. Before: 35 of 458752 floats differ at frame 0 on Rock Pool, worst
-16 ulp, growing to 0.68 world units by frame 39. After: bit-identical over 40
-frames on both Rock Pool and DamBreak 10cm, the two zero-noise scenes with
-`vorticityConfinement > 0`. The lesson generalises: **cross-product packing is
-inert for the cross itself, but not when the packed register also feeds a dot
-product.** This document previously listed that packing class as harmless.
-
-**Sixth defect -- `SolveSprings` / `SolveSpringsNV`, and the worst one so far.**
-The recovered source wrote the accumulated spring delta to
-`deltas.Load4/Store4(springIdxBase * 16)`. The DXBC overwrites the register
-holding `springIdxBase` with `reverseLookup[springIdxBase]` when it loads `pos0`,
-and then uses *that* register for the deltas address:
-
-    ld_structured r0.x, r0.x, l(0), t6.xxxx   ; r0.x = reverseLookup[springIdxBase]
-    ...
-    ishl r0.x, r0.x, l(4)                     ; address = r0.x * 16
-    ld_raw  r3.xyzw, r0.x, u0
-    store_raw u0.xyzw, r0.x, r1.xyzw
-
-So every spring delta was being written to the wrong particle. Both variants are
-now **byte-identical to the shipped blobs**, and Tearing reproduces the
-shipped-versus-shipped control value exactly (3.63798e-12 at frame 0, same
-particle).
-
-This one is worth dwelling on, because it is the strongest evidence in the
-project for why structural-only verification is not enough. `SolveSprings` and
-`SolveSpringsNV` were marked `Verified`. Their disassembly differed from the
-shipped blob by **two lines**, both of the form `r0.x` versus `r1.y` -- pure
-register allocation to every eye, and `regnorm` scored them 0. The audit, the
-constant sweep and the byte-length check all passed them. What none of those
-could see is that the rest of the program was *textually identical*, so the
-later instruction `ishl r0.x, r0.x, l(4)` read a different value in the two
-builds. A register rename is only inert when the renamed register is dead; here
-it was live, 60 instructions later, under the same name.
-
-### Liveness is not optional, and it caught a false pass
-
-A differential test against a kernel that never runs reports "no difference" for
-the wrong reason. `radixSort1CS` was no-op stubbed and Rigid8 did not move --
-nor did Triangle Collision, nor Env Cloth Small. The sort only dispatches the
-1CS/2CS/3CS path when `numSortBlocks >= 2`, i.e. above 1024 items
-(`RadixSortImpl::sort`); below that only `radixSortBlockCS` runs. It is
-exercised by Cloth Layers, Flag Cloth and Tearing, through the spring sort --
-none of which were in the original scene set. Had the batch been scored without
-the no-op probe, three sort shaders would have been recorded as verified on a
-vacuous result.
-
-### The ledger, closed
-
-All 82 manifest entries now carry evidence that is not merely structural:
-
-| Evidence | Count |
-| --- | --- |
-| byte-exact against the shipped blob (proof; no test needed) | 49 |
-| runtime bit-identical on a zero-noise scene | 20 |
-| runtime indistinguishable from a non-zero noise floor (inflatables) | 5 |
-| runtime tested, not bit-identical (`SolveShapes` family) | 8 |
-| **neither** | **0** |
-
-The batch also produced the first AMD-path runtime evidence:
-`ComputeTotalBoundsAMD` and `ComputeTotalBoundsGroupAMD` are unreachable on the
-RTX 4050 by vendor id, and are bit-identical over 30 frames on the Radeon 780M
-via `--adapter=0`, on Triangle Collision and Shape Collision (both zero-noise
-there).
-
-Byte-exactness rose from 47 to 49 of 82; `CalculateVorticity` is runtime
-bit-identical but still 56 bytes short of the shipped stream, so it is
-`Verified` rather than byte-exact.
-
-
-### What the remaining `.hlsl_rev` sources still owe
-
-Eight sources keep the `.hlsl_rev` suffix: `SolveShapes`,
-`SolveShapesPlasticDeformation` and their six `*NV` variants. All eight are
-`Equivalent`, which means the structural audit found nothing — and the whole
-point of the runtime round is that the structural audit found nothing on four
-groups that were wrong. Do not read `Equivalent` as "agrees with the shipped
-shader". Read it as "no check run so far has distinguished it".
-
-All eight have now **executed on real hardware**, which is new; the previous
-revision of this document listed six of them as never having run on any GPU.
-Doing so paid immediately: it exposed the `QuatMul` association defect described
-under Current Work Status, which every structural axis had passed and which the
-constant-bit sweep could not see either, because reassociation changes no
-constants.
-
-Current state on an RTX 4050, 60 frames, scenes whose noise floor is exactly
-zero (verified by two baseline runs per scene):
-
-| Source | Scene | Frame-0 footprint | First diff |
+| Entry | raw | rn | residual |
 | --- | --- | --- | --- |
-| `SolveShapes` (non-NV) | Rigid8, `--extensions=0` | 8 / 192000 floats, all 1 ulp | frame 0, 6.4e-08 rel |
-| `SolveShapesNV` | Rigid8 | 141 / 192000, 90 of them 1 ulp | frame 0, 6.7e-08 rel |
-| `SolveShapes128NV` | Melting | — | frame 5, 1.3e-07 rel |
-| `SolveShapesPlasticDeformationNV` | Plastic Coarse | — | frame 56, 1.6e-07 rel |
-| `SolveShapesPlasticDeformation128NV` | Plastic Very Coarse | — | frame 53, 6.0e-08 rel |
+| `CollideShapes` | 440 | 2 | one fused multiply; 440 lines are its register renumbering |
+| `UpdateTriangles` | 30 | 2 | lane permutation of one register |
+| `UpdateTrianglesNV` | 30 | 2 | same register, same cause |
+| `TransformShapeBounds` | 28 | 2 | free global lane rotation on the geometry load |
+| `CollideParticles` | 117 | 11 | one hoisted int cbuffer read, plus five `mov`s it forces |
 
-For scale, from the same scene and harness: before the `QuatMul` fix
-`SolveShapesNV` moved **1886** floats with a tail to 43 ulp, and one deliberate
-single-level reassociation moves **11630**. At 141 and 8, the remaining residual
-is two orders of magnitude below a hot-path reassociation.
+### `CollideShapes` -- FXC has no gradient between two stable shapes
 
-Why they are still not `Verified`:
+Only two codegen shapes are reachable from HLSL at the convex-plane normalise:
 
-**1. Not bit-identical, and the residual has no source-level explanation.**
-Every per-component arithmetic chain has been compared against the shipped
-disassembly instruction by instruction and matches in operand order and fusion
-points. What differs is our build emitting scalar chains where the shipped blob
-packs two or three components per instruction, and a negate modifier where it
-multiplies by a `±1.0` literal. Both classes are bit-exact in IEEE 754, so on
-paper the residual should be zero — and it is not. (This was previously
-attributed to FXC 10.1 versus 6.3; that is disproved — both compilers emit the
-same bytes from our source, so the packing difference comes from the source.) That gap is unexplained, and an
-unexplained gap is exactly what the last four defects looked like before they
-were found. It is small, but "small" was also true of the anisotropy threshold.
+- **Natural load** -- FXC always splits into `mul r28.y` (the scalar `wRaw`) plus
+  a three-wide `mul r29.xyz` in a fresh register, with no gather. Eleven distinct
+  spellings all produce byte-identical output here, including four scalars in
+  shipped lane order, component-wise assignment into a declared `float4` or
+  `float3`, writing `.w` before `.xyz`, both operand orders, and two helper forms.
+- **Any spelling that states the permutation** -- FXC produces the fused 4-wide
+  `mul`, but *sinks the permutation into the `ld` swizzle* and the `dp3`, drops
+  the gather `mov`, and needs an extra `mov` to rebuild the pair. Strictly worse
+  on every number (raw 449, rn 3, 1046 instructions).
 
-Two things have since been ruled out as hiding places for it. The declaration
-block — `dcl_thread_group`, `dcl_tgsm` and the bindings, none of which the
-audit normaliser or the constant sweep can see — matches the shipped blob
-exactly on all eight variants, `dcl_temps` aside. And all eight kernels are
-confirmed live in the configurations they were tested in, by no-op stubbing in
-both directions, so none of the results is a false negative from testing a
-kernel that never ran.
+The shipped blob is a **third** combination: fused 4-wide `mul` with a *natural*
+load plus a gather `mov`. Every spelling that asks for the fusion also licenses
+the lane renumbering, and every spelling that denies the renumbering also loses
+the fusion. Both reachable shapes cost two instructions, so FXC has no gradient
+to follow between them.
 
-**2. Three hypotheses about the residual have already been falsified.** Recorded
-so they are not re-run:
+Pinning the other operand -- the usual escape -- is disproven at the mechanism
+level rather than merely untried: `invScale` already occupies identical lanes in
+both builds (`div r21.yzw, l(1,1,1,1), r18.xxyz`, with `r21.x` holding an
+integer), and a swizzled read costs nothing, so the permutation sinks regardless.
+The only untried direction is changing what the `dp4` reads, and every relaxation
+of its contiguity demand changes the reduction and is not bit-neutral.
 
-- *`dp4` versus the `mul`/`add`/`mad` chain.* Rewriting `NormalizeQuat` to emit
-  the shipped chain removed the `dp4`, but a build differing **only** in that
-  respect is bit-identical to one using `dot(q, q)` — zero floats differ over 60
-  frames. The `dp4` never contributed anything; the entire improvement came from
-  `QuatMul`. The chain form is kept anyway, because matching the shipped
-  disassembly is worth more than the one-line source.
-- *FP-atomic ordering.* `AccumulateDelta` uses `NvInterlockedAddFp32`, whose
-  accumulation order is scheduling-dependent, which looked like a complete
-  explanation. It is not: two blobs differing only in scheduling (the three
-  `NvShflDown` calls reordered, per-component arithmetic untouched) produce
-  bit-identical output over 60 frames. Atomic order is stable here.
-- *Reduction tree shape.* The shuffle deltas were briefly misread as `16..1` in
-  the shipped blob against `1..16` in ours. They are `1,2,4,8,16` in both.
+### The other four
 
-**3. The `1.0` / `-1.0` constant count delta is explained, and is inert.** The
-sweep reports the shipped blobs carrying 19-21 instances of `1.0` and 5-6 of
-`-1.0` against our 16-18 and 2-3. This is `RotateBasis`: 6.3 folds the cross
-against a literal basis vector into a masked `mul r9.xy, r2.zxzz, l(-1.0, 1.0,
-0, 0)` where 10.1 uses a negate source modifier. Multiplication by `±1.0` and the
-negate modifier agree bit-for-bit on every finite value, on both zeroes and on
-infinities. Earlier revisions flagged this as the last open structural
-discrepancy; it is closed, and it is not the residual.
+- **`UpdateTriangles`** -- ours packs `[w.z, w.x, wz, w.y]`, shipped
+  `[wz, w.z, w.y, w.x]`. Eleven spellings measured across two rounds, with only
+  two outcomes: this packing, or a regression. Unlike `SolveVelocities`, the
+  consumer cannot be used as the lever -- every consumer reads the register
+  through a *free swizzle*, and the only lane-pinned consumers (three
+  `InterlockedAddFp32` calls) constrain it merely up to a permutation, which both
+  builds satisfy. There is no demand to move.
+- **`TransformShapeBounds`** -- the shipped blob loads geometry as `t5.yzxw` and
+  stores `upper` rotated; `lower`, `edges`, `center` and every store are identity
+  in both. Proven to be a free tie-break: `upper`'s layout equals `geom`'s in
+  every switch case and both layouts cost the same, the `mov l(0)` mask lane
+  simply moving from `y` to `z`. Fourteen variants failed -- nine respellings and
+  five structural materialisations, of which two were exactly inert and three cost
+  an instruction.
+- **`CollideParticles`** -- the surplus is one prologue `mov` of an int cbuffer
+  read plus five `mov`s it forces: FXC pairs the hoisted invariant with
+  `nextNeighborIdx`, evicting `numNeighbors` into a third loop-carried chain,
+  where the shipped blob carries one pair through all three grid loops. The hoist
+  is positional and field-independent (see the negatives above), and survives
+  every change to the compare, to the other operand, to surrounding liveness, and
+  to wrapping the block in an `inout` helper. The remaining hypothesis is that the
+  **loop nest itself** differs from the original -- everything inside it has been
+  ruled out.
 
-What would promote them: find the source formulation that emits the missing
-instructions. The compiler has been eliminated as an explanation — 6.3 and 10.1
-produce byte-identical code for every shader here, so the packing differences
-are ours, not the toolchain's. Byte comparison now puts a hard number on the
-gap: the eight are 60 to 276 bytes *shorter* than the shipped instruction
-stream, so ours is genuinely expressing something in fewer instructions rather
-than merely arranging it differently. That is a concrete, bounded target, and
-`scratchpad/bytecmp.py` measures progress against it directly without any
-disassembly-text interpretation.
+None of these is recorded as unreachable. This document's history is emphatically
+against that claim: `RotateBasis`, the +/-1.0 literal, the cross lane permutation
+and the inflatable family were each called closed or unreachable and each later
+yielded. They are recorded as *unreached, with the search space bounded*.
 
-Until then these eight stay `Equivalent`. The honest summary is that they are
-far closer than they were, that nothing known can distinguish them from the
-shipped kernels at a magnitude the simulation cares about — the two *shipped*
-kernels disagree with each other 650x more strongly than ours disagrees with
-either — and that bit-exactness is still unproven.
+
+## Shader inventory
 
 Behaviour worth knowing, preserved because the DXBC is authoritative:
 
@@ -1190,7 +680,7 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Family | DXBC shader group | `src/shaders` source | Status |
 | --- | --- | --- | --- |
 | Flex | `g_Flex_ApplyDeltas` | `ApplyDeltas.hlsl` | Exact |
-| Flex | `g_Flex_CalculateAnisotropy` | `CalculateAnisotropy.hlsl` | Verified |
+| Flex | `g_Flex_CalculateAnisotropy` | `CalculateAnisotropy.hlsl` | Exact |
 | Flex | `g_Flex_CalculateBounds` | `CalculateBounds.hlsl` | Exact |
 | Flex | `g_Flex_CalculateBoundsAMD` | `CalculateBounds.hlsl` | Exact |
 | Flex | `g_Flex_CalculateBoundsFinalize` | `CalculateBoundsFinalize.hlsl` | Exact |
@@ -1202,52 +692,52 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_CalculateBoundsNV` | `CalculateBounds.hlsl` | Exact |
 | Flex | `g_Flex_CalculateDensity` | `CalculateDensity.hlsl` | Exact |
 | Flex | `g_Flex_CalculateDensitySurfaceTension` | `CalculateDensitySurfaceTension.hlsl` | Exact |
-| Flex | `g_Flex_CalculateInflatableVolume` | `CalculateInflatableVolume.hlsl` | Equivalent |
-| Flex | `g_Flex_CalculateInflatableVolumeAMD` | `CalculateInflatableVolume.hlsl` | Equivalent |
-| Flex | `g_Flex_CalculateInflatableVolumeNV` | `CalculateInflatableVolume.hlsl` | Equivalent |
+| Flex | `g_Flex_CalculateInflatableVolume` | `CalculateInflatableVolume.hlsl` | Exact |
+| Flex | `g_Flex_CalculateInflatableVolumeAMD` | `CalculateInflatableVolume.hlsl` | Exact |
+| Flex | `g_Flex_CalculateInflatableVolumeNV` | `CalculateInflatableVolume.hlsl` | Exact |
 | Flex | `g_Flex_CalculateParticleHash` | `CalculateParticleHash.hlsl` | Exact |
-| Flex | `g_Flex_CalculateVorticity` | `CalculateVorticity.hlsl` | Verified |
+| Flex | `g_Flex_CalculateVorticity` | `CalculateVorticity.hlsl` | Exact |
 | Flex | `g_Flex_ClampDiffuseParticleCount` | `ClampDiffuseParticleCount.hlsl` | Exact |
 | Flex | `g_Flex_ClearCellBuckets` | `ClearCellBuckets.hlsl` | Exact |
 | Flex | `g_Flex_ClearFloat4` | `ClearFloat4.hlsl` | Exact |
 | Flex | `g_Flex_ClearInt` | `ClearInt.hlsl` | Exact |
 | Flex | `g_Flex_CollideParticles` | `CollideParticles.hlsl` | Verified |
 | Flex | `g_Flex_CollideShapes` | `CollideShapes.hlsl` | Verified |
-| Flex | `g_Flex_CollideTriangles` | `CollideTriangles.hlsl` | Verified |
+| Flex | `g_Flex_CollideTriangles` | `CollideTriangles.hlsl` | Exact |
 | Flex | `g_Flex_CompactDiffuseParticles` | `CompactDiffuseParticles.hlsl` | Exact |
 | Flex | `g_Flex_ComputeTriangleBounds` | `ComputeTriangleBounds.hlsl` | Exact |
-| Flex | `g_Flex_ContinuousShockPropagation` | `ContinuousShockPropagation.hlsl` | Verified |
+| Flex | `g_Flex_ContinuousShockPropagation` | `ContinuousShockPropagation.hlsl` | Exact |
 | Flex | `g_Flex_CreateDiffuseParticles` | `CreateDiffuseParticles.hlsl` | Exact |
-| Flex | `g_Flex_CreateGrid` | `CreateGrid.hlsl` | Verified |
+| Flex | `g_Flex_CreateGrid` | `CreateGrid.hlsl` | Exact |
 | Flex | `g_Flex_Finalize` | `Finalize.hlsl` | Exact |
 | Flex | `g_Flex_NormalizeVertexNormals` | `NormalizeVertexNormals.hlsl` | Exact |
-| Flex | `g_Flex_Predict` | `Predict.hlsl` | Verified |
+| Flex | `g_Flex_Predict` | `Predict.hlsl` | Exact |
 | Flex | `g_Flex_ReorderParticles` | `ReorderParticles.hlsl` | Exact |
-| Flex | `g_Flex_SmoothPositions` | `SmoothPositions.hlsl` | Verified |
+| Flex | `g_Flex_SmoothPositions` | `SmoothPositions.hlsl` | Exact |
 | Flex | `g_Flex_SolveContactsAccumulate` | `SolveContactsAccumulate.hlsl` | Exact |
 | Flex | `g_Flex_SolveContactsAveraged` | `SolveContactsAveraged.hlsl` | Exact |
 | Flex | `g_Flex_SolveContactsSequential` | `SolveContactsSequential.hlsl` | Exact |
 | Flex | `g_Flex_SolveDensities` | `SolveDensities.hlsl` | Exact |
 | Flex | `g_Flex_SolveDensitiesNonFluid` | `SolveDensitiesNonFluid.hlsl` | Exact |
 | Flex | `g_Flex_SolveDensitiesSurfaceTension` | `SolveDensitiesSurfaceTension.hlsl` | Exact |
-| Flex | `g_Flex_SolveInflatableVolume` | `SolveInflatableVolume.hlsl` | Equivalent |
-| Flex | `g_Flex_SolveInflatableVolumeNV` | `SolveInflatableVolume.hlsl` | Equivalent |
-| Flex | `g_Flex_SolveShapes` | `SolveShapes.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveShapes128NV` | `SolveShapes128NV.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveShapes32NV` | `SolveShapes32NV.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveShapesNV` | `SolveShapesNV.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveShapesPlasticDeformation` | `SolveShapesPlasticDeformation.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveShapesPlasticDeformation128NV` | `SolveShapesPlasticDeformation128NV.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveShapesPlasticDeformation32NV` | `SolveShapesPlasticDeformation32NV.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveShapesPlasticDeformationNV` | `SolveShapesPlasticDeformationNV.hlsl_rev` | Equivalent |
-| Flex | `g_Flex_SolveSprings` | `SolveSprings.hlsl` | Verified |
-| Flex | `g_Flex_SolveSpringsNV` | `SolveSprings.hlsl` | Verified |
-| Flex | `g_Flex_SolveVelocities` | `SolveVelocities.hlsl` | Verified |
+| Flex | `g_Flex_SolveInflatableVolume` | `SolveInflatableVolume.hlsl` | Exact |
+| Flex | `g_Flex_SolveInflatableVolumeNV` | `SolveInflatableVolume.hlsl` | Exact |
+| Flex | `g_Flex_SolveShapes` | `SolveShapes.hlsl` | Exact |
+| Flex | `g_Flex_SolveShapes128NV` | `SolveShapes128NV.hlsl` | Exact |
+| Flex | `g_Flex_SolveShapes32NV` | `SolveShapes32NV.hlsl` | Exact |
+| Flex | `g_Flex_SolveShapesNV` | `SolveShapesNV.hlsl` | Exact |
+| Flex | `g_Flex_SolveShapesPlasticDeformation` | `SolveShapesPlasticDeformation.hlsl` | Exact |
+| Flex | `g_Flex_SolveShapesPlasticDeformation128NV` | `SolveShapesPlasticDeformation128NV.hlsl` | Exact |
+| Flex | `g_Flex_SolveShapesPlasticDeformation32NV` | `SolveShapesPlasticDeformation32NV.hlsl` | Exact |
+| Flex | `g_Flex_SolveShapesPlasticDeformationNV` | `SolveShapesPlasticDeformationNV.hlsl` | Exact |
+| Flex | `g_Flex_SolveSprings` | `SolveSprings.hlsl` | Exact |
+| Flex | `g_Flex_SolveSpringsNV` | `SolveSprings.hlsl` | Exact |
+| Flex | `g_Flex_SolveVelocities` | `SolveVelocities.hlsl` | Exact |
 | Flex | `g_Flex_SpringsGenerateIndices` | `SpringsGenerateIndices.hlsl` | Exact |
 | Flex | `g_Flex_SpringsParticleRange` | `SpringsParticleRange.hlsl` | Exact |
 | Flex | `g_Flex_SpringsReorder` | `SpringsReorder.hlsl` | Exact |
 | Flex | `g_Flex_TransformShapeBounds` | `TransformShapeBounds.hlsl` | Verified |
-| Flex | `g_Flex_UpdateDiffuseParticles` | `UpdateDiffuseParticles.hlsl` | Verified |
+| Flex | `g_Flex_UpdateDiffuseParticles` | `UpdateDiffuseParticles.hlsl` | Exact |
 | Flex | `g_Flex_UpdateTriangles` | `UpdateTriangles.hlsl` | Verified |
 | Flex | `g_Flex_UpdateTrianglesInit` | `UpdateTrianglesInit.hlsl` | Exact |
 | Flex | `g_Flex_UpdateTrianglesNV` | `UpdateTriangles.hlsl` | Verified |
@@ -1255,23 +745,23 @@ Behaviour worth knowing, preserved because the DXBC is authoritative:
 | Flex | `g_Flex_UpdateVertexNormals` | `UpdateVertexNormals.hlsl` | Exact |
 | Flex | `g_Flex_UpdateVertexNormalsInit` | `UpdateVertexNormalsInit.hlsl` | Exact |
 | Flex | `g_Flex_UpdateVertexNormalsNV` | `UpdateVertexNormals.hlsl` | Exact |
-| Radix sort | `g_RadixSort1CS` | `radixSort1CS.hlsl` | Verified |
-| Radix sort | `g_RadixSort2CS` | `radixSort2CS.hlsl` | Verified |
-| Radix sort | `g_RadixSort3CS` | `radixSort3CS.hlsl` | Verified |
-| Radix sort | `g_RadixSortBlockCS` | `radixSortBlockCS.hlsl` | Verified |
-| BVH | `g_bvh_BuildHierarchy` | `bvh/BuildHierarchy.hlsl` | Complete |
-| BVH | `g_bvh_BuildLeaves` | `bvh/BuildLeaves.hlsl` | Complete |
-| BVH | `g_bvh_CalculateKeyDeltas` | `bvh/CalculateKeyDeltas.hlsl` | Complete |
-| BVH | `g_bvh_CalculateMortonCodes` | `bvh/CalculateMortonCodes.hlsl` | Verified |
-| BVH | `g_bvh_ComputeTotalBounds` | `bvh/ComputeTotalBounds.hlsl` | Complete |
-| BVH | `g_bvh_ComputeTotalBoundsAMD` | `bvh/ComputeTotalBounds.hlsl` | Verified |
-| BVH | `g_bvh_ComputeTotalBoundsFinalize` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Complete |
-| BVH | `g_bvh_ComputeTotalBoundsFinalizeAMD` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Complete |
-| BVH | `g_bvh_ComputeTotalBoundsFinalizeNV` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Complete |
-| BVH | `g_bvh_ComputeTotalBoundsGroup` | `bvh/ComputeTotalBoundsGroup.hlsl` | Complete |
-| BVH | `g_bvh_ComputeTotalBoundsGroupAMD` | `bvh/ComputeTotalBoundsGroup.hlsl` | Verified |
-| BVH | `g_bvh_ComputeTotalBoundsGroupNV` | `bvh/ComputeTotalBoundsGroup.hlsl` | Complete |
-| BVH | `g_bvh_ComputeTotalBoundsNV` | `bvh/ComputeTotalBounds.hlsl` | Complete |
+| Radix sort | `g_RadixSort1CS` | `radixSort1CS.hlsl` | Exact |
+| Radix sort | `g_RadixSort2CS` | `radixSort2CS.hlsl` | Exact |
+| Radix sort | `g_RadixSort3CS` | `radixSort3CS.hlsl` | Exact |
+| Radix sort | `g_RadixSortBlockCS` | `radixSortBlockCS.hlsl` | Exact |
+| BVH | `g_bvh_BuildHierarchy` | `bvh/BuildHierarchy.hlsl` | Exact |
+| BVH | `g_bvh_BuildLeaves` | `bvh/BuildLeaves.hlsl` | Exact |
+| BVH | `g_bvh_CalculateKeyDeltas` | `bvh/CalculateKeyDeltas.hlsl` | Exact |
+| BVH | `g_bvh_CalculateMortonCodes` | `bvh/CalculateMortonCodes.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBounds` | `bvh/ComputeTotalBounds.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBoundsAMD` | `bvh/ComputeTotalBounds.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBoundsFinalize` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBoundsFinalizeAMD` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBoundsFinalizeNV` | `bvh/ComputeTotalBoundsFinalize.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBoundsGroup` | `bvh/ComputeTotalBoundsGroup.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBoundsGroupAMD` | `bvh/ComputeTotalBoundsGroup.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBoundsGroupNV` | `bvh/ComputeTotalBoundsGroup.hlsl` | Exact |
+| BVH | `g_bvh_ComputeTotalBoundsNV` | `bvh/ComputeTotalBounds.hlsl` | Exact |
 | BVH | `g_bvh_ComputeTotalInvEdges` | `bvh/ComputeTotalInvEdges.hlsl` | Exact |
 
 Shared shader support files:
@@ -1281,4 +771,4 @@ Shared shader support files:
 | `KernelParams.hlsli` | Shared Flex kernel parameter declarations. | Support |
 | `Utils.hlsli` | Shared shader helper code. | Support |
 | `bvh/BVHCommon.hlsli` | Shared BVH shader helper code. | Support |
-| `Shaders.cfg` | Build manifest for recovered shader compilation, including all `.hlsl_rev` sources. | Support |
+| `Shaders.cfg` | Build manifest for recovered shader compilation; every recovered source is listed here exactly once. | Support |

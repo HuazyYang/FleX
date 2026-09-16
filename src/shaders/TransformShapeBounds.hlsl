@@ -37,8 +37,18 @@ StructuredBuffer<FlexTriangleMeshDevice> triangleMeshes : register(t7);
 RWStructuredBuffer<float4> lowers : register(u0);
 RWStructuredBuffer<float4> uppers : register(u1);
 
+// cross(q.xyz, v) spelled component-wise: the DXBC emits a two-wide product pair
+// plus a scalar, not the three-wide pack the cross() intrinsic produces.
+float3 CrossSplit(float3 a, float3 b) {
+    float2 t = a.zx * b.yz;
+    float2 xy = a.yz * b.zx - t;
+    float tw = a.y * b.x;
+    float z = a.x * b.y - tw;
+    return float3(xy, z);
+}
+
 float3 RotateVector(float4 q, float3 v) {
-    return v * (2.0 * q.w * q.w - 1.0) + cross(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
+    return v * (2.0 * q.w * q.w - 1.0) + CrossSplit(q.xyz, v) * q.w * 2.0 + q.xyz * dot(q.xyz, v) * 2.0;
 }
 
 // Same rotation with cross(q.xyz, v) and dot(q.xyz, v) supplied pre-folded. The
@@ -83,7 +93,7 @@ void LocalShapeBounds(uint shapeType, float4 geom, out float3 lower, out float3 
     }
 }
 
-void TransformBounds(float3 position, float4 rotation, float3 lower, float3 upper, out float3 outLower, out float3 outUpper) {
+void TransformBounds(float4 rotation, float3 lower, float3 upper, out float3 worldCenter, out float3 worldExtents) {
     float3 axisX = RotateBasis(rotation, float3(1.0, 0.0, 0.0),
                                float3(0.0, rotation.z, -rotation.y), rotation.x);
     float3 axisY = RotateBasis(rotation, float3(0.0, 1.0, 0.0),
@@ -92,14 +102,14 @@ void TransformBounds(float3 position, float4 rotation, float3 lower, float3 uppe
                                float3(rotation.y, -rotation.x, 0.0), rotation.z);
 
     float3 edges = upper - lower;
-    float3 worldExtents = abs(axisX * edges.x) + abs(axisY * edges.y);
-    worldExtents = abs(axisZ * edges.z) + worldExtents.xyz;
+    float3 ex = axisX * edges.x;
+    float3 ey = axisY * edges.y;
+    float3 ez = axisZ * edges.z;
+    worldExtents = abs(ex) + abs(ey);
+    worldExtents = worldExtents.xyz + abs(ez);
 
     float3 center = (lower + upper) * 0.5;
-    float3 worldCenter = RotateVector(rotation, center) + position;
-
-    outLower = worldCenter - worldExtents * 0.5;
-    outUpper = worldCenter + worldExtents * 0.5;
+    worldCenter = RotateVector(rotation, center);
 }
 
 [numthreads(256, 1, 1)]
@@ -110,14 +120,18 @@ void TransformShapeBounds(uint idx : SV_DispatchThreadID) {
     float3 localUpper;
     LocalShapeBounds(shapeType, geometry[idx], localLower, localUpper);
 
-    float3 lowerNow;
-    float3 upperNow;
-    float3 lowerPrev;
-    float3 upperPrev;
-    TransformBounds(positions[idx].xyz, rotations[idx], localLower, localUpper, lowerNow, upperNow);
-    TransformBounds(positionsPrev[idx].xyz, rotationsPrev[idx], localLower, localUpper, lowerPrev, upperPrev);
+    float3 cNow, eNow, cPrev, ePrev;
+    TransformBounds(rotations[idx], localLower, localUpper, cNow, eNow);
+    float3 wNow = cNow + positions[idx].xyz;
+    float3 lowerNow = wNow - eNow * 0.5;
+    float3 upperNow = wNow + eNow * 0.5;
+
+    TransformBounds(rotationsPrev[idx], localLower, localUpper, cPrev, ePrev);
+    float3 wPrev = cPrev + positionsPrev[idx].xyz;
+    float3 lowerPrev = wPrev - ePrev * 0.5;
+    float3 upperPrev = wPrev + ePrev * 0.5;
 
     lowers[idx] = float4(min(lowerNow, lowerPrev), 0.0);
-    uppers[idx] = float4(max(upperPrev, upperNow), 0.0);
+    uppers[idx] = float4(max(upperNow, upperPrev), 0.0);
     }
 }

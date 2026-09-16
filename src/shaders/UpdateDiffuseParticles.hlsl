@@ -77,7 +77,10 @@ void UpdateDiffuseParticles(uint idx : SV_DispatchThreadID) {
             float distance = dot(position, plane.xyz) + plane.w - gParams.kCollisionDistance;
             if (distance <= 0.0) {
                 position -= distance * plane.xyz;
-                float normalVelocity = dot(velocity, plane.xyz);
+                // The DXBC takes this dot against the velocity loaded at entry, not
+                // the running `velocity` the loop updates: `dp3 r1.w, r1.xyzx, ...`
+                // where r1.xyz is diffuseVelocities[idx].xyz and is never rewritten.
+                float normalVelocity = dot(diffuseVelocity, plane.xyz);
                 if (normalVelocity < 0.0)
                     velocity -= 1.5 * normalVelocity * plane.xyz;
             }

@@ -25,8 +25,9 @@ void ContinuousShockPropagation(int idx: SV_GroupThreadID, int globalIdx: SV_Dis
     GroupMemoryBarrierWithGroupSync();
 
     if (globalIdx < gParams.kNumParticles) {
+        float3 gmax = g0;
         float4 pos = positions[globalIdx];
-        float3 delta = g0 - pos.xyz;
+        float3 delta = -pos.xyz + gmax;
         float invM = dot(delta, g1) * gParams.kShockPropagation;
         invM = exp(invM);
         positions[globalIdx].w *= invM;

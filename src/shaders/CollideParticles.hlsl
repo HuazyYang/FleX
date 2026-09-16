@@ -15,7 +15,8 @@ RWStructuredBuffer<int> contactCounts : register(u1);
 #define BLOCK_DIM_X         256
 
 [numthreads(BLOCK_DIM_X, 1, 1)]
-void CollideParticles(int globalIdx: SV_DispatchThreadID) {
+void CollideParticles(uint3 dtid: SV_DispatchThreadID) {
+    int globalIdx = int(dtid.x);
     if (globalIdx < gParams.kNumParticles) {
         float3 p = sortedNewPositions[globalIdx].xyz;
         int3 ipos = int3((p - bounds[0]) * gParams.kInvCellEdge);
@@ -32,6 +33,9 @@ void CollideParticles(int globalIdx: SV_DispatchThreadID) {
         }
 
         int selfNext = globalIdx + 1;
+        bool ignoreSelfEnabled = ignoreSelfCollision != 0;
+        bool selfCollideEnabled = selfCollision != 0;
+
         int nextNeighborIdx = globalIdx;
         int numNeighbors = 0;
 
@@ -51,8 +55,8 @@ void CollideParticles(int globalIdx: SV_DispatchThreadID) {
                         int phase = phases[cellId];
                         int group2 = (phase & eNvFlexPhaseGroupMask);
                         bool sameGroup = (group == group2);
-                        if (!sameGroup || selfCollision) {
-                            if (ignoreSelfCollision && sameGroup) {
+                        if (!sameGroup || selfCollideEnabled) {
+                            if (ignoreSelfEnabled && sameGroup) {
                                 float3 p1 = restPositions[indices[cellId]].xyz;
                                 float3 v10 = p0 - p1;
                                 float norm = dot(v10, v10);

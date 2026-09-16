@@ -52,12 +52,12 @@ void SolveVelocities(uint idx : SV_DispatchThreadID) {
 
                 float q = 1.0 - dist * gParams.kInvRadius;
                 float q2 = q * q;
-                float densityWeight = q2 * gParams.kSpiky1;
+                float densityWeight = gParams.kSpiky1 * q2;
 
-                float newDensityPotential = q2 * gParams.kSpiky1 + densityPotential;
+                float newDensityPotential = gParams.kSpiky1 * q2 + densityPotential;
                 float3 newViscosityDelta = ((velocityDiff * gParams.kViscosity) * densityWeight) * gParams.kDt + viscosityDelta;
 
-                float3 grad = dir * (q * -gParams.kSpiky2);
+                float3 grad = (q * -gParams.kSpiky2) * dir;
                 float3 newVorticityGradient = curl[neighbor].w * grad + vorticityGradient;
                 newVorticityGradient = applyVorticity ? newVorticityGradient : vorticityGradient;
 
@@ -78,14 +78,26 @@ void SolveVelocities(uint idx : SV_DispatchThreadID) {
         float3 curlSelf = curl[idx].xyz;
         float vorticityScale = gParams.kDt * gParams.kDt * gParams.kInvRestDensity * gParams.kVorticityConfinement;
 
-        float gradientSq = dot(vorticityGradient, vorticityGradient);
-        float3 gradientDir = (gradientSq > 0.0) ? vorticityGradient * rsqrt(gradientSq) : 0.0;
+        // The shipped blob re-packs the gradient into four lanes (g.y, g.z, g.z, g.x)
+        // with `mov r4.xyzw, r4.yzzx` before normalising, sums the square over that
+        // layout (`dp3 r5.w, r4.xzwx, ...`), and splits the cross into one four-wide
+        // product read back stride-two (`mul r6.xy` + `mad r6.xy`) plus a separate
+        // scalar z term, rather than one three-wide cross().
+        float4 g4 = vorticityGradient.yzzx;
+        float gradientSq = dot(g4.xzw, g4.xzw);
+        float4 gradientDir = (gradientSq > 0.0) ? g4 * rsqrt(gradientSq) : 0.0;
 
-        float3 delta = confineVorticity ? (vorticityScale * cross(gradientDir, curlSelf) + viscosityDelta)
+        float4 gt = gradientDir * curlSelf.zyxz;
+        float2 crossXY = gt.xz - gt.yw;
+        float gz = gradientDir.x * curlSelf.x;
+        float crossZ = gradientDir.w * curlSelf.y - gz;
+
+        float3 delta = confineVorticity ? (vorticityScale * float3(crossXY, crossZ) + viscosityDelta)
                                         : viscosityDelta;
 
+        bool dissipate = gParams.kDissipation > 0.0;
         float3 scaledVelocity = velocity * gParams.kDt;
-        delta = (gParams.kDissipation > 0.0) ? (-(scaledVelocity * neighborCount) * gParams.kDissipation + delta) : delta;
+        delta = dissipate ? (-(scaledVelocity * neighborCount) * gParams.kDissipation + delta) : delta;
         delta = (gParams.kDamping > 0.0) ? (-scaledVelocity * gParams.kDamping + delta) : delta;
 
         if (gParams.kRestitution > 0.0) {
@@ -108,7 +120,7 @@ void SolveVelocities(uint idx : SV_DispatchThreadID) {
                     restitution = bounce ? bounced : restitution;
                 }
 
-                delta = restitution.xyz / max(restitution.w, 1.0) + delta;
+                delta = delta + restitution.xyz / max(restitution.w, 1.0);
             }
         }
 
@@ -121,7 +133,7 @@ void SolveVelocities(uint idx : SV_DispatchThreadID) {
             // is the authority here, so keep the doubling.
             float potentialScale = max(1.0 - dot(float2(gParams.kInvRestDensity, gParams.kInvRestDensity),
                                                  float2(densityPotential, densityPotential)), 0.0);
-            float potential = speedSq * (diffusePotential * potentialScale);
+            float potential = (potentialScale * diffusePotential) * speedSq;
             potentials[idx] = (phase & eNvFlexPhaseFluid) ? potential : 0.0;
         }
 

@@ -27,7 +27,8 @@ void Predict(int globalIdx: SV_DispatchThreadID) {
         v1 = alive ? v1 : v0;
 
         float v1Norm = dot(v1, v1);
-        v1 = (gParams.kMaxSpeed * gParams.kMaxSpeed) < v1Norm ? gParams.kMaxSpeed * rsqrt(v1Norm) * v1 : v1;
+        float v1InvNorm = rsqrt(v1Norm);
+        v1 = (gParams.kMaxSpeed * gParams.kMaxSpeed) < v1Norm ? gParams.kMaxSpeed * v1InvNorm * v1 : v1;
         velocities[idx] = v1;
 
         float3 dp = v1 * gParams.kDt;

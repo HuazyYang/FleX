@@ -16,7 +16,9 @@ void CalculateVorticity(int globalIdx: SV_DispatchThreadID) {
 
         uint phase = (uint)sortedPhases[globalIdx];
         bool isFluid = (phase & 0x400000u) != 0;
-        if (!isFluid) {
+        // Spelled `== false` rather than `!`: `!` lets FXC fold the mask test into
+        // the branch, while the explicit compare keeps the shipped `ine r, r, l(0)`.
+        if (isFluid == false) {
             curl[globalIdx] = 0.0.xxxx;
             return;
         }
@@ -33,7 +35,7 @@ void CalculateVorticity(int globalIdx: SV_DispatchThreadID) {
             int contactPhase = sortedPhases[contact];
             bool contactFluid = (contactPhase & 0x400000) != 0;
 
-            if (!contactFluid)
+            if (contactFluid == false)
                 continue;
 
             float3 p1 = sortedNewPositions[contact].xyz;
@@ -43,7 +45,7 @@ void CalculateVorticity(int globalIdx: SV_DispatchThreadID) {
             float3 v1 = sortedNewVelocities[contact].xyz;
             float3 v10 = v1 - v0;
             float len = sqrt(lenSqr);
-            float3 q10 = d01 * ((1.0 - len * gParams.kInvRadius) * -gParams.kSpiky2) / len;
+            float3 q10 = ((1.0 - len * gParams.kInvRadius) * -gParams.kSpiky2) * d01 / len;
             // Component-wise rather than the swizzled form. The swizzled cross makes
             // FXC rotate d01 into non-natural lanes, and d01 also feeds dot(d01, d01),
             // so the rotation changes that dp3's summation order and the result.

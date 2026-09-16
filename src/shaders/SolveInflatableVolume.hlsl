@@ -29,9 +29,10 @@ void SolveInflatableVolume(int threadIdx: SV_GroupThreadID, int blockIdx: SV_Gro
 
     float lambda = lambdas[blockIdx];
     int idxBase = inflatableInBlock.mStartTri;
+    int numTris = inflatableInBlock.mNumTris;
     float dx2 = dx * dx;
 
-    for (int triIdx = threadIdx; triIdx < inflatableInBlock.mNumTris; triIdx += BLOCK_DIM_X) {
+    for (int triIdx = threadIdx; triIdx < numTris; triIdx += BLOCK_DIM_X) {
         int triIdxAbs = triIdx + idxBase;
 
         int idx1 = indices[triIdxAbs * 3];

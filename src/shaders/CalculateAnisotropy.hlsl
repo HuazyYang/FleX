@@ -144,8 +144,13 @@ void CalculateAnisotropy(uint idx : SV_DispatchThreadID) {
                     float3 dx = delta * delta.x;        // xx xy xz
                     float3 dy = delta.yzx * delta.y;    // yy yz yx
                     float3 dz = delta * delta.z;        // zx zy zz
-                    acc0 += weight * float4(dx, dy.z);
-                    acc1 += weight * float4(dy.xy, dz.xy);
+                    // Binding both weighted products before accumulating them makes
+                    // FXC materialise the two operand packs back to back; written
+                    // inline it interleaves the second pack with the first mad.
+                    float4 w0 = weight * float4(dx, dy.z);
+                    float4 w1 = weight * float4(dy.xy, dz.xy);
+                    acc0 += w0;
+                    acc1 += w1;
                     acc2 += weight * dz.z;
                 }
             }

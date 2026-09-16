@@ -14,7 +14,7 @@ void CreateGrid(int globalIdx: SV_DispatchThreadID) {
             cellStarts[cellId] = 0;
         else {
             uint prevCellId = cellIds[globalIdx - 1];
-            if (prevCellId != cellId) {
+            if (cellId != prevCellId) {
                 cellStarts[cellId] = globalIdx;
                 cellEnds[prevCellId] = globalIdx;
             }
