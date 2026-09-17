@@ -33,7 +33,8 @@ if ! "$FXC" -nologo -T cs_5_0 -E "$E" -Iexternal/nvapi/include -Iexternal/ags_li
   echo "$E: FXC FAILED"; sed -n '1,8p' "$T/log"; exit 1
 fi
 norm() { tr -d '\r' | sed -n '/^cs_5_0/,/^ret/p' \
-  | grep -v '^dcl_' | sed 's/[[:space:]]*$//' | sed -E 's/([0-9]+[.][0-9]{6})[0-9]+/\1/g'; }
+  | grep -v '^dcl_' | sed 's/[[:space:]]*$//' | sed -E 's/([0-9]+[.][0-9]{6})[0-9]+/\1/g' \
+  | sed -E 's/([0-9]{9})[0-9]+[.][0-9]+/\1./g'; }
 norm < "$T/o.h" > "$T/new"; norm < "src/dxbc/$BLOB.asm" > "$T/old"
 rn() { sed -E 's/\br[0-9]+\.[xyzw]+/R/g; s/\br[0-9]+\b/R/g' "$1"; }
 rn "$T/new" > "$T/new.rn"; rn "$T/old" > "$T/old.rn"
