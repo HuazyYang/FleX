@@ -236,7 +236,7 @@ private:
    void ExecuteCallback(NvFlexSolverCallbackStage stage, float dt);
 
    void CopyBufferImpl(NvFlexBuffer* dstBuffer, NvFlexBuffer *srcBuffer, const NvFlexCopyDesc *copyDesc);
-   void CopyBufferImpl(NvFlexBuffer* dstBuffer, NvFlexUint srcElemOffset, NvFlexBuffer* srcBuffer, NvFlexUint dstElemOffset, NvFlexUint numElements);
+   void CopyBufferImpl(NvFlexBuffer* dstBuffer, NvFlexUint dstElemOffset, NvFlexBuffer* srcBuffer, NvFlexUint srcElemOffset, NvFlexUint numElements);
 
    void SpringGenerateIndices(NvFlexBuffer* indices, int numSprings);
    void SpringFindParticleRange(NvFlexBuffer* sortedIndices, int numSprings);

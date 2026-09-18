@@ -530,7 +530,7 @@ void Solver::GetNeighbors(NvFlexBuffer *neighbors, NvFlexBuffer *counts,
 void Solver::GetBounds(NvFlexBuffer *lower, NvFlexBuffer *upper) {
     auto context = mLib->mContext;
     CopyBufferImpl(lower, 0, mParticleBounds, 0, 1);
-    CopyBufferImpl(upper, 1, mParticleBounds, 0, 1);
+    CopyBufferImpl(upper, 0, mParticleBounds, 1, 1);
 }
 
 float Solver::GetDeviceLatency(NvFlexUint64 *gpuStartStamp, NvFlexUint64 *gpuEndStamp,
@@ -1872,12 +1872,12 @@ void Solver::CopyBufferImpl(NvFlexBuffer *dstBuffer, NvFlexBuffer *srcBuffer,
                        "Call to an NvFlexSet*() method with incompatible buffer strides");
     }
 }
-void Solver::CopyBufferImpl(NvFlexBuffer *dstBuffer, NvFlexUint srcElemOffset,
-                            NvFlexBuffer *srcBuffer, NvFlexUint dstElemOffset,
+void Solver::CopyBufferImpl(NvFlexBuffer *dstBuffer, NvFlexUint dstElemOffset,
+                            NvFlexBuffer *srcBuffer, NvFlexUint srcElemOffset,
                             NvFlexUint numElements) {
     NvFlexCopyDesc copyDesc = {};
-    copyDesc.srcOffset = srcElemOffset;
     copyDesc.dstOffset = dstElemOffset;
+    copyDesc.srcOffset = srcElemOffset;
     copyDesc.elementCount = numElements;
     CopyBufferImpl(dstBuffer, srcBuffer, &copyDesc);
 }
