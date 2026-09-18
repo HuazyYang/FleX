@@ -2,7 +2,7 @@
 
 namespace NvFlex {
 
-inline uint32_t Object::addRef() {
+uint32_t Object::addRef() {
     uint32_t ref = m_refCount.fetch_add(1, std::memory_order_relaxed) + 1;
     return ref;
 }

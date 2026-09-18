@@ -665,6 +665,10 @@ NV_FLEX_API void NvFlexContextRestoreResourceState(NvFlexContext* context,
         NvFlex::implCast<NvFlex::Resource>(resource));
 }
 
+NV_FLEX_API void NvFlexContextClearState(NvFlexContext* context) {
+    NvFlex::implCast<NvFlex::Context>(context)->clearState();
+}
+
 NV_FLEX_API bool NvFlexContextIsSparseTextureSupported(NvFlexContext* context) {
     return NvFlex::implCast<NvFlex::Context>(context)->is_VTR_supported();
 }

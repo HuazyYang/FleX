@@ -369,7 +369,7 @@ Device* Library::GetDevice() {
 void Library::ClearBufferInt(NvFlexBuffer* buffer, NvFlexUint sizeInBytes, NvFlexInt val) {
     if (buffer) {
         auto ptr = (ClearParamsInt*)mShaderClearConstantBufferInt.Map(mContext);
-        ptr->lengthInWords = sizeInBytes;
+        ptr->lengthInWords = sizeInBytes / sizeof(int);
         ptr->value = val;
         mShaderClearConstantBufferInt.Unmap(mContext);
 
@@ -754,6 +754,7 @@ Library::~Library() {
     mStaticTriLowers = nullptr;
     mStaticTriUppers = nullptr;
     NvFlexReleaseFence(mSyncQuery);
+    mResourceTracker.cleanup(this);
     delete mTriangleMeshData;
     delete mConvexMeshData;
     mConvexMeshBoundsReadbackBuffer = nullptr;

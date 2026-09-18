@@ -272,6 +272,8 @@ struct Context : NvFlexContext {
 
     virtual void restoreResourceState(Resource *resource) = 0;
 
+    virtual void clearState() = 0;
+
     virtual int is_VTR_supported() = 0;
 
     virtual void updateVTRMapping(Texture3DVTR *textureIn, HeapVTR *heapIn,

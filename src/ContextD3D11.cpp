@@ -723,6 +723,10 @@ void ContextD3D11::processFenceWait(NvFlexContext *context) {}
 
 void ContextD3D11::restoreResourceState(Resource *resource) {}
 
+void ContextD3D11::clearState() {
+    m_deviceContext->ClearState();
+}
+
 void ContextD3D11::setFormats(GraphicsShader *graphicsShader,
                               NvFlexFormat renderTargetFormat,
                               NvFlexFormat depthStencilFormat) {

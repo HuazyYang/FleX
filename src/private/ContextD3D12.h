@@ -909,6 +909,8 @@ struct ContextD3D12 : Object, Context {
 
     void restoreResourceState(Resource *resource) override;
 
+    void clearState() override;
+
     int is_VTR_supported() override;
 
     void updateVTRMapping(Texture3DVTR *textureIn, HeapVTR *heapIn,

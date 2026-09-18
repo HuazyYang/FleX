@@ -173,6 +173,7 @@ void LinearBVHBuilderGPU::Build(BVH* bvh, NvFlexBuffer* itemLowers,
         params.readWrite[3] = NvFlexBufferGetResourceRW(mTotalUpper);
         params.readWrite[4] = NvFlexBufferGetResourceRW(mTotalInvEdges);
         params.gridDim = make_dim(1);
+        params.rootConstantBuffer = mConstantBuffer;
         NvFlexContextDispatch(mContext, &params);
     }
 

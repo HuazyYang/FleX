@@ -611,6 +611,8 @@ NV_FLEX_API void NvFlexContextClearDepthStencil(NvFlexContext* context, NvFlexDe
 
 NV_FLEX_API void NvFlexContextRestoreResourceState(NvFlexContext* context, NvFlexResource* resource);
 
+NV_FLEX_API void NvFlexContextClearState(NvFlexContext* context);
+
 NV_FLEX_API bool NvFlexContextIsSparseTextureSupported(NvFlexContext* context);
 
 NV_FLEX_API void NvFlexContextUpdateSparseMapping(NvFlexContext* context, NvFlexTexture3DSparse* tex, NvFlexHeapSparse* heap, NvFlexUint* blockTableImage, NvFlexUint rowPitch, NvFlexUint depthPitch);

@@ -575,7 +575,8 @@ NV_FLEX_API void NvFlexFreeBuffer(NvFlexBuffer* buf) {
 NV_FLEX_API void* NvFlexMap(NvFlexBuffer* bufferIn, int flags) {
     auto buffer = implCast<Buffer>(bufferIn);
     return implCast<Context>(buffer->getContext())
-        ->map(buffer, eNvFlexStagingCpuAccess_readwrite, (flags & eNvFlexMapWait) != 0);
+        ->map(buffer, eNvFlexStagingCpuAccess_readwrite,
+              (flags & eNvFlexMapDoNotWait) != 0);
 }
 
 NV_FLEX_API void NvFlexUnmap(NvFlexBuffer* bufferIn) {

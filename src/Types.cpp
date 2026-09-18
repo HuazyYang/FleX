@@ -89,8 +89,7 @@ uint32_t getFormatSizeInBytes(NvFlexFormat format) {
 bool isFormatTypeless(NvFlexFormat format) {
     return format == eNvFlexFormat_r32_typeless || format == eNvFlexFormat_r16_typeless ||
            format == eNvFlexFormat_r24_unorm_x8_typeless ||
-           format == eNvFlexFormat_r24g8_typeless ||
-           format == eNvFlexFormat_r24_unorm_x8_typeless;
+           format == eNvFlexFormat_r24g8_typeless;
 }
 
 DXGI_FORMAT convertToDXGI(NvFlexFormat format) {

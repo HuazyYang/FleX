@@ -420,6 +420,8 @@ struct ContextD3D11 : Object, Context {
 
     void restoreResourceState(Resource *resource) override;
 
+    void clearState() override;
+
     void setFormats(GraphicsShader *graphicsShader, NvFlexFormat renderTargetFormat,
                     NvFlexFormat depthStencilFormat) override;
 

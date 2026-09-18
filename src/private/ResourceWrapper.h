@@ -42,7 +42,6 @@ class AutoPtr : protected Allocable {
     AutoPtr &operator=(AutoPtr &&rhs) noexcept {
         internalRelease();
         swap(ptr_, rhs.ptr_);
-        internalAddRef();
         return *this;
     }
 
@@ -72,7 +71,7 @@ class AutoPtr : protected Allocable {
         ptr_ = ptr;
     }
 
-    void Detach() {
+    T *Detach() {
         auto p = ptr_;
         ptr_ = nullptr;
         return p;

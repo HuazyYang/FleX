@@ -23,7 +23,7 @@ inline NvFlexUint Rand() {
 }
 
 inline float Randf() {
-    return (float)Rand();
+    return (float)Rand() * (1.f / (float)0xffffffffu);
 }
 
 inline float Randf(float min, float max) {

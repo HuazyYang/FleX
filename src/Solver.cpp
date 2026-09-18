@@ -332,10 +332,9 @@ void Solver::GetRigids(NvFlexBuffer *offsets, NvFlexBuffer *indices,
         CopyBufferImpl(restNormals, 0, mRigidLocalNormals, 0, numRigidIndices);
 
         if (thresholds)
-            CopyBufferImpl(thresholds, 0, (NvFlexBuffer *)&mRigidPlasticThresholds, 0,
-                           numRigids);
+            CopyBufferImpl(thresholds, 0, mRigidPlasticThresholds, 0, numRigids);
         if (creeps)
-            CopyBufferImpl(creeps, 0, (NvFlexBuffer *)&mRigidPlasticCreeps, 0, numRigids);
+            CopyBufferImpl(creeps, 0, mRigidPlasticCreeps, 0, numRigids);
     }
 }
 
@@ -415,7 +414,7 @@ void Solver::SetDynamicTriangles(NvFlexBuffer *triangles, NvFlexBuffer *normals,
 
         mDynamicNumTris = numTris;
     } else {
-        mDynamicMaxTris = 0;
+        mDynamicNumTris = 0;
     }
 }
 
@@ -531,7 +530,7 @@ void Solver::GetNeighbors(NvFlexBuffer *neighbors, NvFlexBuffer *counts,
 void Solver::GetBounds(NvFlexBuffer *lower, NvFlexBuffer *upper) {
     auto context = mLib->mContext;
     CopyBufferImpl(lower, 0, mParticleBounds, 0, 1);
-    CopyBufferImpl(upper, 0, mParticleBounds, 1, 1);
+    CopyBufferImpl(upper, 1, mParticleBounds, 0, 1);
 }
 
 float Solver::GetDeviceLatency(NvFlexUint64 *gpuStartStamp, NvFlexUint64 *gpuEndStamp,
@@ -611,8 +610,8 @@ NvFlexUint Solver::GetDetailTimers(NvFlexDetailTimer **timers) {
     }
 
     if(numTimers < mNumDetailTimers) {
-        strcpy(timers[numTimers]->name, "Total");
-        timers[numTimers]->time = latencyTimeVal;
+        strcpy(mDetailTimers[numTimers].name, "Total");
+        mDetailTimers[numTimers].time = latencyTimeVal;
         ++numTimers;
     }
 
@@ -748,7 +747,8 @@ Solver::~Solver() {
     SafeRelease(mTimerPool);
     Allocable::deallocate(mDetailTimers);
 
-    mLib->GetResourceTracker()->remove(this, NvResourceTracker::eSolver);
+    mLib->GetResourceTracker()->remove(static_cast<NvFlexSolver *>(this),
+                                       NvResourceTracker::eSolver);
 }
 
 bool Solver::Init() {
@@ -968,7 +968,8 @@ bool Solver::Init() {
 
     mLib->ExecuteContext();
 
-    mLib->GetResourceTracker()->add(this, NvResourceTracker::eSolver);
+    mLib->GetResourceTracker()->add(static_cast<NvFlexSolver *>(this),
+                                    NvResourceTracker::eSolver);
 
     return true;
 }
@@ -1122,6 +1123,9 @@ void Solver::UpdateSubstep(const IterationState &state) {
     }
 
     LazyClearGrid(state);
+
+    if (mLib->mGpuVendorId == VENDOR_ID_NVIDIA)
+        NvFlexContextClearState(mLib->mContext);
 
     ++mStepCounter;
 }

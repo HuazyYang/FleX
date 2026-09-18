@@ -275,9 +275,7 @@ int SDFData::Allocate() {
 }
 
 void SDFData::Free(int index) {
-    auto tex3D = mTextures[index];
-    NvFlexReleaseTexture3D(tex3D);
-    mTextures[index] = 0;
+    mTextures[index] = nullptr;
     mFreeList[--mNumSDFs] = index;
 }
 

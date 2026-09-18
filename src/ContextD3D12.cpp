@@ -2515,6 +2515,10 @@ void ContextD3D12::restoreResourceState(Resource *resource) {
                               *resourced3d12->ref_restoreResourceState);
 }
 
+void ContextD3D12::clearState() {
+    m_commandList->ClearState(nullptr);
+}
+
 int ContextD3D12::is_VTR_supported() {
     if (!m_VTRSupportChecked) {
         D3D12_FEATURE_DATA_D3D12_OPTIONS options;

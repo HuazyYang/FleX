@@ -27,12 +27,12 @@ int TimerPool::begin() {
         return -1;
 
     int index = m_usedElemCount++;
-    if (index > m_elems.size())
+    if (index >= m_elems.size())
         m_elems.resize(m_usedElemCount);
 
     auto timer = m_elems[index];
     if (!timer)
-        timer = NvFlexCreateContextTimer(m_context);
+        m_elems[index] = timer = NvFlexCreateContextTimer(m_context);
     else
         NvFlexContextTimerEnd(m_context, timer);
 

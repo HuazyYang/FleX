@@ -30,7 +30,7 @@ T *copy_range(const T *start, const T *end, T *dest) {
 template <typename T>
 T *copy_construct_range(const T *start, const T *end, T *dest) {
     while (start != end)
-        *dest++ = ::new T(*start++);
+        ::new (dest++) T(*start++);
     return dest;
 }
 
@@ -273,9 +273,11 @@ class VectorCached {
             size_type new_capacity = other.m_size;
             m_data = allocate(new_capacity);
             m_capacity = new_capacity;
-            details::copy_construct_range(other.m_data, other.m_data + other.m_size,
+            details::move_construct_range(other.m_data, other.m_data + other.m_size,
                                           m_data);
             m_size = other.m_size;
+            details::destroy_range(other.m_data, other.m_data + other.m_size);
+            other.m_size = 0;
         } else {
             std::swap(m_data, other.m_data);
             std::swap(m_capacity, other.m_capacity);
