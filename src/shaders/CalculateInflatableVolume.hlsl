@@ -5,6 +5,9 @@ StructuredBuffer<float4> positions : register(t1);
 StructuredBuffer<int> reverseLookup : register(t2);
 StructuredBuffer<int> indices : register(t3);
 RWStructuredBuffer<float> lambdas: register(u0);
+#if NVFLEX_XPBD
+RWStructuredBuffer<float> volumeLambdas : register(u1);
+#endif
 
 #define BLOCK_DIM_X      512
 #define BLOCK_DIM_X_BITS 9u
@@ -263,6 +266,21 @@ void CalculateInflatableVolume(uint3 groupThreadId: SV_GroupThreadID, uint3 grou
     }
 
     if (threadIdx == 0) {
+#if NVFLEX_XPBD
+        // XPBD (Macklin, Muller, Chentanez 2016, Eq. 18) on the volume
+        // constraint C = V - V0. D = sum |grad C_i|^2 at the rest pose, whose
+        // reciprocal the host stores as mConstraintScale; alphaT = alpha / dt^2.
+        // The multiplier accumulates in volumeLambdas across the iterations of
+        // one substep and is cleared by the host per substep. SolveInflatableVolume
+        // applies Dx = -lambda * n per vertex, so the step dx = n * dlam is stored
+        // negated. The PBD k^3 re-inflation boost is intentionally not applied.
+        float C = volumeOfInflatable - inflatableInBlock.mRestVolume;
+        float D = 1.0 / inflatableInBlock.mConstraintScale;
+        float alphaT = gParams.kVolumeCompliance * gParams.kInvDt * gParams.kInvDt;
+        float dlam = (-C - alphaT * volumeLambdas[blockIdx]) / (D + alphaT);
+        volumeLambdas[blockIdx] += dlam;
+        lambdas[blockIdx] = -dlam;
+#else
         // `eps` is bound first so the `mul l(0.010000)` lands right after the
         // load pair, and `k3` last so the final multiply takes it as its
         // second source. Both are operand-order only; the arithmetic is the
@@ -272,5 +290,6 @@ void CalculateInflatableVolume(uint3 groupThreadId: SV_GroupThreadID, uint3 grou
 
         float k3 = k * k * k;
         lambdas[blockIdx] = ((volumeOfInflatable - inflatableInBlock.mRestVolume) * inflatableInBlock.mConstraintScale) * k3;
+#endif
     }
 }

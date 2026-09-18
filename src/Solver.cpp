@@ -192,6 +192,9 @@ void Solver::SetSprings(NvFlexBuffer *springIndices, NvFlexBuffer *springLengths
         mHalfSpringParticleEnd.Create(context, mMaxParticles, 
                                               "NvFlexSolver::mHalfSpringParticleEnd");
 
+        mHalfSpringLambdas.CreateWithZero(context, elementCount,
+                                          "NvFlexSolver::mHalfSpringLambdas");
+
         mHalfSpringConstantBuffer.Create(context, sizeof(int), 1);
         mMaxHalfSprings = elementCount;
     }
@@ -438,6 +441,9 @@ void Solver::SetInflatables(NvFlexBuffer *startTris, NvFlexBuffer *numTris,
 
         mPressures.CreateWithZero(context, numToAlloc,  "NvFlexSolver::mPressures");
 
+        mInflatableLambdas.CreateWithZero(context, numToAlloc,
+                                          "NvFlexSolver::mInflatableLambdas");
+
         mMaxInflatables = numToAlloc;
     }
 
@@ -663,6 +669,7 @@ Solver::Solver(NvFlexLibrary *lib, const NvFlexSolverDesc *desc)
       mHalfSpringStiffness{},
       mHalfSpringParticleBegin{},
       mHalfSpringParticleEnd{},
+      mHalfSpringLambdas{},
       mHalfSpringConstantBuffer{},
       mMaxHalfSprings{},
       mRigidOffsets{},
@@ -686,6 +693,7 @@ Solver::Solver(NvFlexLibrary *lib, const NvFlexSolverDesc *desc)
       mDynamicTriangleEdges{},
       mDynamicNumTriEdges{},
       mPressures{},
+      mInflatableLambdas{},
       mInflatables{},
       mNumInflatables{},
       mMaxInflatables{},
@@ -937,6 +945,11 @@ bool Solver::Init() {
     mParams.maxSpeed = FLT_MAX;
     mParams.maxAcceleration = FLT_MAX;
     mParams.numIterations = 1;
+    mParams.solverMode = eNvFlexSolverPBD;
+    mParams.stiffnessMin = 1.0e3f;
+    mParams.stiffnessMax = 1.0e9f;
+    mParams.springDamping = 0.f;
+    mParams.volumeCompliance = 0.f;
 
     mShapes = new ShapeData;
 
@@ -1056,6 +1069,18 @@ void Solver::InitParams(const IterationState &state) {
     p.kDiffuseDt = dt * (float)numSubsteps;
     p.kDiffuseMaxVelocity = FLT_MAX;
     p.kMaxContactsPerParticle = mMaxContactsPerParticle;
+    p.kSolverMode = mParams.solverMode;
+    {
+        // [0,1] stiffness coefficient -> [stiffnessMin, stiffnessMax] N/m, geometric,
+        // compliance = 1 / stiffness (blog.mmacklin.com, "XPBD slides and stiffness")
+        float stiffnessMin = std::max(mParams.stiffnessMin, 1.0e-6f);
+        float stiffnessMax = std::max(mParams.stiffnessMax, stiffnessMin);
+        p.kInvStiffnessMin = 1.f / stiffnessMin;
+        p.kLogStiffnessRange = log2f(stiffnessMax / stiffnessMin);
+    }
+    p.kSpringDamping = mParams.springDamping;
+    p.kVolumeCompliance = mParams.volumeCompliance;
+    p._padXpbd[0] = p._padXpbd[1] = p._padXpbd[2] = 0.f;
 
     auto vptr = mKernelParams.Map(mLib->mContext);
     memcpy(vptr, &p, sizeof(p));
@@ -1076,6 +1101,14 @@ void Solver::UpdateSubstep(const IterationState &state) {
     CollideTriangles(state);
     CollideShapes(state);
     ContinuousShockPropagation(state);
+
+    if (mParams.solverMode == eNvFlexSolverXPBD) {
+        // XPBD: Lagrange multipliers persist across iterations and reset per substep
+        if (mNumSprings)
+            mLib->ClearBufferInt(mHalfSpringLambdas, sizeof(float) * mMaxHalfSprings, 0);
+        if (mNumInflatables)
+            mLib->ClearBufferInt(mInflatableLambdas, sizeof(float) * mMaxInflatables, 0);
+    }
 
     for (int i = 0; i < mParams.numIterations; ++i) {
         ExecuteCallback(eNvFlexStageIterationStart, state.dta);
@@ -1447,6 +1480,11 @@ void Solver::SolveSprings(const IterationState &) {
         params.readOnly[5] = NvFlexBufferGetResource(mHalfSpringParticleEnd);
         params.readOnly[6] = NvFlexBufferGetResource(mReverseLookup);
         params.readOnly[7] = NvFlexBufferGetResource(mSortedNewPositions);
+        if (mParams.solverMode == eNvFlexSolverXPBD) {
+            params.shader = mLib->mShaderSolveSpringsXPBD;
+            params.readWrite[1] = NvFlexBufferGetResourceRW(mHalfSpringLambdas);
+            params.readOnly[8] = NvFlexBufferGetResource(mSortedPositions);
+        }
         params.gridDim = make_dim(kNumParticleBlocks, 1, 1);
         params.rootConstantBuffer = mKernelParams;
         NvFlexContextDispatch(mLib->mContext, &params);
@@ -1464,6 +1502,10 @@ void Solver::CalculateAndSolveInflatables(const IterationState &) {
         params.readOnly[1] = NvFlexBufferGetResource(mSortedNewPositions);
         params.readOnly[2] = NvFlexBufferGetResource(mReverseLookup);
         params.readOnly[3] = NvFlexBufferGetResource(mDynamicTriangles);
+        if (mParams.solverMode == eNvFlexSolverXPBD) {
+            params.shader = mLib->mShaderCalculateInflatableVolumeXPBD;
+            params.readWrite[1] = NvFlexBufferGetResourceRW(mInflatableLambdas);
+        }
         params.gridDim = make_dim(kNumInflatables, 1, 1);
         params.rootConstantBuffer = mKernelParams;
         NvFlexContextDispatch(mLib->mContext, &params);
@@ -1507,7 +1549,11 @@ void Solver::SolveShapes(const IterationState &) {
         params.rootConstantBuffer = mKernelParams;
 
         NvFlexUint avgWorkload;
-        if(mRigidPlasticThresholds && mRigidPlasticCreeps) {
+        if(mParams.solverMode == eNvFlexSolverXPBD) {
+            params.shader = (mRigidPlasticThresholds && mRigidPlasticCreeps)
+                                ? mLib->mShaderSolveShapesPlasticDeformationXPBD
+                                : mLib->mShaderSolveShapesXPBD;
+        } else if(mRigidPlasticThresholds && mRigidPlasticCreeps) {
             if(mLib->mIsSHFLSupported && mLib->mIsFP32ATOMICSupported) {
                 avgWorkload = mNumRigidIndices / mNumRigids;
                 if(avgWorkload > 32) {

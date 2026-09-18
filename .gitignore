@@ -21,3 +21,7 @@ src/dx/context
 # Locally fetched FXC 6.3.9600.16384 (Win 8.1 SDK), used to reproduce the
 # shipped DXBC exactly. Microsoft binaries - fetched, never committed.
 /tools/fxc63/
+
+# Reference videos matched against by the XPBD demo scenes (the paper's
+# supplementary material). Large binaries - kept locally, never committed.
+/data/*.mp4

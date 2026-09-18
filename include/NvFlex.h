@@ -94,6 +94,15 @@ enum NvFlexRelaxationMode
 	eNvFlexRelaxationLocal  = 1		//!< The relaxation factor is a fixed multiplier on each constraint's delta divided by the particle's constraint count, convergence will be slower but more reliable
 };
 
+/**
+ * Selects the constraint formulation used for springs, inflatables and rigid shapes
+ */
+enum NvFlexSolverMode
+{
+	eNvFlexSolverPBD  = 0,			//!< Position-based dynamics (default): each constraint applies a per-iteration stiffness multiplier k, so effective stiffness depends on dt, substeps and iterations
+	eNvFlexSolverXPBD = 1			//!< Extended PBD (Macklin, Mueller, Chentanez 2016): compliant constraints with accumulated Lagrange multipliers, stiffness independent of dt, substeps and iterations
+};
+
 
 /**
  * Simulation parameters for a solver
@@ -157,6 +166,24 @@ struct NvFlexParams
 
 	NvFlexRelaxationMode relaxationMode;//!< How the relaxation is applied inside the solver
 	float relaxationFactor;				//!< Control the convergence rate of the parallel solver, default: 1, values greater than 1 may lead to instability
+
+	// solver mode params (XPBD)
+	//
+	// Known limitations of eNvFlexSolverXPBD:
+	//  - Density and contact constraints stay PBD; only springs, inflatables and rigid shapes are compliant.
+	//  - Under eNvFlexRelaxationLocal the applied Jacobi delta is divided by the particle's constraint count
+	//    while the multiplier accumulates the full step, so the multiplier bookkeeping is approximate.
+	//    Iteration independence only holds once the Jacobi solver has converged: a single constraint
+	//    converges in one iteration, but cloth needs about 20 iterations per substep, below which the
+	//    extra sag is solver under-relaxation rather than compliance.
+	//  - Damping is coupled to compliance (gamma = alpha*beta/dt), so springs with k = 1 receive no damping.
+	//  - Shape-matching compliance is per particle-to-goal attachment and mass-free (PBD convention).
+	//  - Inflatables lose the PBD k^3 re-inflation boost; collapsed balloons re-inflate more slowly.
+	NvFlexSolverMode solverMode;		//!< PBD (default) or XPBD (compliant constraints, Macklin et al. 2016): stiffness independent of dt, substeps and iterations
+	float stiffnessMin;					//!< XPBD: constraint stiffness (N/m) that a spring or rigid stiffness coefficient approaches as k -> 0+ (k <= 0 disables the constraint, a negative k still marks a tether). Following "XPBD slides and stiffness" (blog.mmacklin.com, 2016-10-12) the [0,1] coefficient k is mapped onto the range [stiffnessMin, stiffnessMax] and the compliance is its reciprocal: alpha = 1 / (stiffnessMin * (stiffnessMax/stiffnessMin)^k). The interpolation is geometric because material stiffnesses span many orders of magnitude (the post's table runs from fat, 1e3, to concrete, 2.5e10 N/m^2). These are spring constants, not moduli: for material data use k_spring = E*A/L (a cloth of thickness t at spacing h gives k ~ E*t). Values <= 0 are clamped to 1e-6. Default 1e3
+	float stiffnessMax;					//!< XPBD: constraint stiffness (N/m) that a coefficient of 1 maps to; see stiffnessMin. Values below stiffnessMin are clamped to it, which collapses the whole range onto stiffnessMin. Default 1e9
+	float springDamping;				//!< XPBD: Rayleigh constraint damping beta for springs (paper Eq. 26); only acts on compliant springs. Default 0
+	float volumeCompliance;				//!< XPBD: compliance alpha of inflatable volume constraints (inflatables carry no k). Default 0
 };
 
 

@@ -106,6 +106,10 @@ struct Library : Object, NvFlexLibrary {
     NvFlexComputeShader *mShaderSolveShapesPlasticDeformation;
     NvFlexComputeShader *mShaderSolveShapesPlasticDeformation32;
     NvFlexComputeShader *mShaderSolveShapesPlasticDeformation128;
+    NvFlexComputeShader *mShaderSolveSpringsXPBD;
+    NvFlexComputeShader *mShaderCalculateInflatableVolumeXPBD;
+    NvFlexComputeShader *mShaderSolveShapesXPBD;
+    NvFlexComputeShader *mShaderSolveShapesPlasticDeformationXPBD;
     NvFlexComputeShader *mShaderApplyDeltas;
     NvFlexComputeShader *mShaderSolveContactsSequential;
     NvFlexComputeShader *mShaderSolveContactsAveraged;

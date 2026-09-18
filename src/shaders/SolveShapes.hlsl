@@ -1,4 +1,7 @@
 #include "Utils.hlsli"
+#if NVFLEX_XPBD
+#include "KernelParams.hlsli"
+#endif
 
 StructuredBuffer<int> rigidOffsets : register(t0);
 StructuredBuffer<int> rigidIndices : register(t1);
@@ -122,10 +125,27 @@ float3 ReduceSum(uint threadIdx, float3 value) {
 }
 
 void AccumulateDelta(uint sortedIndex, float3 difference, float coefficient) {
+#if NVFLEX_XPBD
+    // XPBD (Macklin, Muller, Chentanez 2016, Eq. 18): each particle is a
+    // distance-to-goal constraint with the goal fixed for this iteration. It is
+    // solved statelessly (the goal is re-fitted every iteration, so an
+    // accumulated multiplier has no meaning) and mass-free like the PBD kernel.
+    // alpha = 1 / (stiffnessMin * (stiffnessMax/stiffnessMin)^k) from the
+    // stiffness k (see SolveSpringsXPBD.hlsl); k <= 0 disables the constraint
+    // (no delta, no count). With C = |difference| and n = difference / C,
+    // dlam = -C / (1 + alphaT) and delta = dlam * n = -difference / (1 + alphaT).
+    float k = min(coefficient, 1.0);
+    if (k <= 0.0)
+        return;
+    uint addr = sortedIndex << 4;
+    float alphaT = gParams.kInvStiffnessMin * exp2(-k * gParams.kLogStiffnessRange) * gParams.kInvDt * gParams.kInvDt;
+    float3 delta = -difference / (1.0 + alphaT);
+#else
     // The address is formed before the delta: the shipped code issues the ishl
     // ahead of the multiply by the stiffness coefficient.
     uint addr = sortedIndex << 4;
     float3 delta = -difference * coefficient;
+#endif
     InterlockedAddFp32(accum, addr + 0, delta.x);
     InterlockedAddFp32(accum, addr + 4, delta.y);
     InterlockedAddFp32(accum, addr + 8, delta.z);

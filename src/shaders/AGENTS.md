@@ -221,6 +221,10 @@ authority for reverse-recovery work.
   exactly once, the entry point matches the file stem, and the line does not
   introduce duplicate output names unintentionally.
 
+- `ShadersXPBD.cfg` holds the XPBD entries, which have no shipped blob. They are
+  built by the separate `NvFlexShadersXPBD` target and sit outside the
+  DXBC-equivalence sweep (`tools/bytecmp.py`, `tools/dxbccmp.sh`).
+
 ## Current Work Status
 
 Status is tracked per unique DXBC shader group. The authoritative recovery

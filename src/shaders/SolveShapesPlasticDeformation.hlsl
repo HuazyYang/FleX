@@ -1,4 +1,7 @@
 #include "Utils.hlsli"
+#if NVFLEX_XPBD
+#include "KernelParams.hlsli"
+#endif
 
 StructuredBuffer<int> rigidOffsets : register(t0);
 StructuredBuffer<int> rigidIndices : register(t1);
@@ -297,7 +300,22 @@ void SolveShapesPlasticDeformation(uint rigid : SV_GroupID, uint threadIdx : SV_
             // The address is formed before the delta: the shipped code issues the
             // ishl ahead of the multiply by the stiffness coefficient.
             uint addr = sortedIndex << 4;
+#if NVFLEX_XPBD
+            // XPBD (Macklin, Muller, Chentanez 2016, Eq. 18): distance-to-goal
+            // constraint with the goal fixed for this iteration, stateless and
+            // mass-free like the PBD kernel; the plastic creep above is unchanged.
+            // alpha = 1 / (stiffnessMin * (stiffnessMax/stiffnessMin)^k) (see
+            // SolveSpringsXPBD.hlsl), delta = -difference / (1 + alphaT); k <= 0
+            // disables the constraint (no delta, no count). Named `stiffness`
+            // rather than `k` because `k` is this loop's counter.
+            float stiffness = min(coefficient, 1.0);
+            if (stiffness > 0.0) {
+                float alphaT = gParams.kInvStiffnessMin * exp2(-stiffness * gParams.kLogStiffnessRange) * gParams.kInvDt * gParams.kInvDt;
+                AccumulateDelta(addr, -difference / (1.0 + alphaT));
+            }
+#else
             AccumulateDelta(addr, -difference * coefficient);
+#endif
         }
     }
 }

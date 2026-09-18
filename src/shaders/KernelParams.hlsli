@@ -89,6 +89,18 @@ struct KernelParams {
     float kMaxAcceleration;
     float kMaxVelocityDelta;
     int kMaxContactsPerParticle;
+#if NVFLEX_XPBD
+    // XPBD-only fields, register 32. Guarded because UpdateDiffuseParticles and
+    // CollideShapes index kPlanes[] dynamically, which makes FXC declare cb0 at
+    // the full struct size; an unconditional append moves their bytecode from
+    // cb0[32] to cb0[34]. The host uploads the 544-byte struct in every mode.
+    int kSolverMode;
+    float kInvStiffnessMin;    // 1 / stiffnessMin; alpha = kInvStiffnessMin * exp2(-k * kLogStiffnessRange)
+    float kLogStiffnessRange;  // log2(stiffnessMax / stiffnessMin)
+    float kSpringDamping;
+    float kVolumeCompliance;   // register 33.x
+    float3 _padXpbd;
+#endif
 };
 
 struct SubstepParams {

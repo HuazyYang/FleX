@@ -8,6 +8,7 @@
 #include "TimerPool.h"
 #include "ClientHelper.h"
 #include "ResourceWrapper.h"
+#include <cstddef>
 
 namespace NvFlex {
 
@@ -103,7 +104,18 @@ struct KernelParams {
     float kMaxAcceleration;
     float kMaxVelocityDelta;
     int kMaxContactsPerParticle;
+    int kSolverMode;
+    float kInvStiffnessMin;    // 1 / stiffnessMin
+    float kLogStiffnessRange;  // log2(stiffnessMax / stiffnessMin)
+    float kSpringDamping;
+    float kVolumeCompliance;
+    float _padXpbd[3];         // constant buffers are sized in 16-byte registers
 };
+static_assert(sizeof(KernelParams) == 544,
+              "KernelParams must stay 34 registers; see KernelParams.hlsli");
+static_assert(offsetof(KernelParams, kSolverMode) == 512 &&
+                  offsetof(KernelParams, kVolumeCompliance) == 528,
+              "the XPBD fields must sit in registers 32 and 33; see KernelParams.hlsli");
 
 struct Solver : Object, NvFlexSolver {
     NVFLEX_IMPLEMENT_OBJECT_REFERENCE()
@@ -286,6 +298,7 @@ private:
    HStructuredBuffer<float> mHalfSpringStiffness;
    HStructuredBuffer<int> mHalfSpringParticleBegin;
    HStructuredBuffer<int> mHalfSpringParticleEnd;
+   HStructuredBuffer<float> mHalfSpringLambdas;
    HUploadBuffer<> mHalfSpringConstantBuffer;
    int mMaxHalfSprings;
    HStructuredBuffer<int> mRigidOffsets;
@@ -309,6 +322,7 @@ private:
    HStructuredBuffer<int> mDynamicTriangleEdges;
    HStructuredBuffer<int> mDynamicNumTriEdges;
    HStructuredBuffer<int> mPressures;
+   HStructuredBuffer<float> mInflatableLambdas;
    HStructuredBuffer<InflatableDevice> mInflatables;
    int mNumInflatables;
    int mMaxInflatables;

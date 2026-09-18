@@ -77,6 +77,13 @@ CMRC_DECLARE(nvflex);
 #include "SpringsGenerateIndices.hlsl.h"
 #include "SpringsParticleRange.hlsl.h"
 #include "SpringsReorder.hlsl.h"
+// XPBD entries (ShadersXPBD.cfg), no shipped blob: always loaded from the generated headers
+#include "SolveSpringsXPBD.hlsl.h"
+#include "CalculateInflatableVolumeXPBD.hlsl.h"
+#include "CalculateInflatableVolumeXPBDNV.hlsl.h"
+#include "CalculateInflatableVolumeXPBDAMD.hlsl.h"
+#include "SolveShapesXPBD.hlsl.h"
+#include "SolveShapesPlasticDeformationXPBD.hlsl.h"
 
 namespace NvFlex {
 
@@ -189,6 +196,18 @@ bool Library::Init(const NvFlexInitDesc* desc, NvFlexErrorCallback errorFunc) {
 #define NVFLEX_CREATE_SHADER_ARGS(name) "g_Flex_"#name".txt", L###name
 
 #endif
+
+    // XPBD shaders have no shipped blob and are created from the generated headers
+    auto createShaderFromHeader = [this](const BYTE *cs, uint64_t len, const wchar_t *label,
+                                         int nvapiSlot) {
+        NvFlexComputeShaderDesc desc = {};
+        desc.cs = cs;
+        desc.cs_length = len;
+        desc.label = label;
+        desc.NVAPI_Slot = nvapiSlot;
+        return NvFlexCreateComputeShader(this->mContext, &desc);
+    };
+#define NVFLEX_CREATE_SHADER_HEADER_ARGS(name) g_##name, sizeof(g_##name), L#name
 
     if (mIsSHFLSupported) {
         mShaderCalculateBounds =
@@ -329,6 +348,23 @@ bool Library::Init(const NvFlexInitDesc* desc, NvFlexErrorCallback errorFunc) {
         createShader(NVFLEX_CREATE_SHADER_ARGS(SpringsParticleRange), 0xFFFFFFFF);
     mShaderSpringsReorder =
         createShader(NVFLEX_CREATE_SHADER_ARGS(SpringsReorder), 0xFFFFFFFF);
+
+    mShaderSolveSpringsXPBD = createShaderFromHeader(
+        NVFLEX_CREATE_SHADER_HEADER_ARGS(SolveSpringsXPBD), 0xFFFFFFFF);
+    if (mIsSHFLSupported) {
+        mShaderCalculateInflatableVolumeXPBD = createShaderFromHeader(
+            NVFLEX_CREATE_SHADER_HEADER_ARGS(CalculateInflatableVolumeXPBDNV), 7u);
+    } else if (mIsSwizzleSupported) {
+        mShaderCalculateInflatableVolumeXPBD = createShaderFromHeader(
+            NVFLEX_CREATE_SHADER_HEADER_ARGS(CalculateInflatableVolumeXPBDAMD), 0xFFFFFFFF);
+    } else {
+        mShaderCalculateInflatableVolumeXPBD = createShaderFromHeader(
+            NVFLEX_CREATE_SHADER_HEADER_ARGS(CalculateInflatableVolumeXPBD), 0xFFFFFFFF);
+    }
+    mShaderSolveShapesXPBD = createShaderFromHeader(
+        NVFLEX_CREATE_SHADER_HEADER_ARGS(SolveShapesXPBD), 0xFFFFFFFF);
+    mShaderSolveShapesPlasticDeformationXPBD = createShaderFromHeader(
+        NVFLEX_CREATE_SHADER_HEADER_ARGS(SolveShapesPlasticDeformationXPBD), 0xFFFFFFFF);
 
     mDevice->prepareContext(mContext, true);
 
@@ -647,6 +683,10 @@ Library::Library()
       mShaderSolveShapesPlasticDeformation{},
       mShaderSolveShapesPlasticDeformation32{},
       mShaderSolveShapesPlasticDeformation128{},
+      mShaderSolveSpringsXPBD{},
+      mShaderCalculateInflatableVolumeXPBD{},
+      mShaderSolveShapesXPBD{},
+      mShaderSolveShapesPlasticDeformationXPBD{},
       mShaderApplyDeltas{},
       mShaderSolveContactsSequential{},
       mShaderSolveContactsAveraged{},
@@ -722,6 +762,10 @@ Library::~Library() {
     NvFlexReleaseComputeShader(mShaderSolveShapesPlasticDeformation);
     NvFlexReleaseComputeShader(mShaderSolveShapesPlasticDeformation32);
     NvFlexReleaseComputeShader(mShaderSolveShapesPlasticDeformation128);
+    NvFlexReleaseComputeShader(mShaderSolveSpringsXPBD);
+    NvFlexReleaseComputeShader(mShaderCalculateInflatableVolumeXPBD);
+    NvFlexReleaseComputeShader(mShaderSolveShapesXPBD);
+    NvFlexReleaseComputeShader(mShaderSolveShapesPlasticDeformationXPBD);
     NvFlexReleaseComputeShader(mShaderApplyDeltas);
     NvFlexReleaseComputeShader(mShaderSolveContactsSequential);
     NvFlexReleaseComputeShader(mShaderSolveContactsAveraged);

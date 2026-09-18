@@ -123,6 +123,20 @@ int g_msaaSamples = 8;
 
 int g_numSubsteps;
 
+// Command-line overrides applied after a scene's Initialize(); -1 leaves the
+// scene's own setting. They exist so playback captures of one scene can be
+// taken at several iteration/substep counts and solver modes without rebuilding.
+int g_overrideIterations = -1;
+int g_overrideSubsteps = -1;
+int g_overrideSolverMode = -1;
+float g_overrideWind = -1.0f;
+
+// --screenshot=FRAME,PATH: save one rendered frame as a TGA and quit, so a
+// scene's render can be compared with a reference image without a human at the
+// keyboard. -1 disables.
+int g_screenshotFrame = -1;
+const char* g_screenshotPath = NULL;
+
 // a setting of -1 means Flex will use the device specified in the NVIDIA control panel
 int g_device = -1;
 // DXGI adapter ordinal the renderer is created on. Flex has no adapter selection of
@@ -1026,6 +1040,11 @@ void Init(int scene, bool centerCamera = true)
 
 	g_params.relaxationMode = eNvFlexRelaxationLocal;
 	g_params.relaxationFactor = 1.0f;
+	g_params.solverMode = eNvFlexSolverPBD;
+	g_params.stiffnessMin = 1.0e3f;
+	g_params.stiffnessMax = 1.0e9f;
+	g_params.springDamping = 0.0f;
+	g_params.volumeCompliance = 0.0f;
 	g_params.solidPressure = 1.0f;
 	g_params.adhesion = 0.0f;
 	g_params.cohesion = 0.025f;
@@ -1053,6 +1072,13 @@ void Init(int scene, bool centerCamera = true)
 	// reset phase 0 particle color to blue
 	g_colors[0] = Colour(0.0f, 0.5f, 1.0f);
 
+	// the two colours DrawCloth reads are also scene-alterable: with its default
+	// colour index 3 it takes the back face from g_colors[3] and the front face
+	// from g_colors[4], so reset both and a scene that repaints its cloth cannot
+	// leak those colours into the next scene
+	g_colors[3] = Colour(0.000f, 0.349f, 0.173f);
+	g_colors[4] = Colour(0.875f, 0.782f, 0.051f);
+
 	g_numSolidParticles = 0;
 
 	g_waveFrequency = 1.5f;
@@ -1079,6 +1105,15 @@ void Init(int scene, bool centerCamera = true)
     NVFLEX_REV_EXPR(NvFlexResetContext(g_flexLib, true));
 	g_scenes[g_scene]->Initialize();
 	EndGpuWork();
+
+	if (g_overrideIterations > 0)
+		g_params.numIterations = g_overrideIterations;
+	if (g_overrideSubsteps > 0)
+		g_numSubsteps = g_overrideSubsteps;
+	if (g_overrideSolverMode >= 0)
+		g_params.solverMode = NvFlexSolverMode(g_overrideSolverMode);
+	if (g_overrideWind >= 0.0f)
+		g_windStrength = g_overrideWind;
 
 	uint32_t numParticles = g_buffers->positions.size();
 	uint32_t maxParticles = numParticles + g_numExtraParticles*g_numExtraMultiplier;
@@ -2067,7 +2102,8 @@ int DoUI()
 			DrawImguiString(x, y, Vec3(1.0f), IMGUI_ALIGN_RIGHT, "Rigid Count: %d", g_buffers->rigidOffsets.size() > 0 ? g_buffers->rigidOffsets.size() - 1 : 0); y -= fontHeight;
 			DrawImguiString(x, y, Vec3(1.0f), IMGUI_ALIGN_RIGHT, "Spring Count: %d", g_buffers->springLengths.size()); y -= fontHeight;
 			DrawImguiString(x, y, Vec3(1.0f), IMGUI_ALIGN_RIGHT, "Num Substeps: %d", g_numSubsteps); y -= fontHeight;
-			DrawImguiString(x, y, Vec3(1.0f), IMGUI_ALIGN_RIGHT, "Num Iterations: %d", g_params.numIterations); y -= fontHeight * 2;
+			DrawImguiString(x, y, Vec3(1.0f), IMGUI_ALIGN_RIGHT, "Num Iterations: %d", g_params.numIterations); y -= fontHeight;
+			DrawImguiString(x, y, Vec3(1.0f), IMGUI_ALIGN_RIGHT, "Solver: %s", g_params.solverMode == eNvFlexSolverXPBD ? "XPBD" : "PBD"); y -= fontHeight * 2;
 
 			DrawImguiString(x, y, Vec3(1.0f), IMGUI_ALIGN_RIGHT, "Device: %s", g_deviceName); y -= fontHeight * 2;
 		}
@@ -2206,6 +2242,27 @@ int DoUI()
 			imguiSlider("Damping", &g_params.damping, 0.0f, 10.0f, 0.01f);
 			imguiSlider("Dissipation", &g_params.dissipation, 0.0f, 0.01f, 0.0001f);
 			imguiSlider("SOR", &g_params.relaxationFactor, 0.0f, 5.0f, 0.01f);
+
+			// XPBD params (Macklin et al. 2016)
+			imguiSeparatorLine();
+			n = float(g_params.solverMode);
+			if (imguiSlider("Solver (0 PBD, 1 XPBD)", &n, 0, 1, 1))
+				g_params.solverMode = NvFlexSolverMode(int(n));
+			// stiffness range the [0,1] coefficients map onto, edited in log10 (N/m)
+			n = log10f(Max(g_params.stiffnessMin, 1.0e-3f));
+			if (imguiSlider("Stiffness Min (log10)", &n, -3.0f, 12.0f, 0.1f))
+			{
+				g_params.stiffnessMin = powf(10.0f, n);
+				g_params.stiffnessMax = Max(g_params.stiffnessMax, g_params.stiffnessMin);
+			}
+			n = log10f(Max(g_params.stiffnessMax, 1.0e-3f));
+			if (imguiSlider("Stiffness Max (log10)", &n, -3.0f, 12.0f, 0.1f))
+			{
+				g_params.stiffnessMax = powf(10.0f, n);
+				g_params.stiffnessMin = Min(g_params.stiffnessMin, g_params.stiffnessMax);
+			}
+			imguiSlider("Spring Damping", &g_params.springDamping, 0.0f, 100.0f, 0.1f);
+			imguiSlider("Volume Compliance", &g_params.volumeCompliance, 0.0f, 0.05f, 0.0001f);
 
 			imguiSlider("Collision Distance", &g_params.collisionDistance, 0.0f, 0.5f, 0.001f);
 			imguiSlider("Collision Margin", &g_params.shapeCollisionMargin, 0.0f, 5.0f, 0.01f);
@@ -2434,6 +2491,25 @@ void UpdateFrame()
 		fwrite(img.m_data, sizeof(uint32_t)*g_screenWidth*g_screenHeight, 1, g_ffmpeg);
 
 		delete[] img.m_data;
+	}
+
+	if (g_screenshotFrame >= 0 && g_frame >= g_screenshotFrame)
+	{
+		TgaImage img;
+		img.m_width = g_screenWidth;
+		img.m_height = g_screenHeight;
+		img.m_data = new uint32_t[g_screenWidth*g_screenHeight];
+
+		ReadFrame((int*)img.m_data, g_screenWidth, g_screenHeight);
+
+		if (!TgaSave(g_screenshotPath, img, false))
+			fprintf(stderr, "[Screenshot] could not write %s\n", g_screenshotPath);
+		else
+			printf("[Screenshot] frame %d -> %s\n", g_frame, g_screenshotPath);
+		fflush(stdout);
+
+		delete[] img.m_data;
+		exit(0);
 	}
 
 	double renderEndTime = GetSeconds();
@@ -3129,6 +3205,11 @@ static void parseArgs(int argc, char* argv[], Options *opts) {
         {'Y', NULL, "playback-mode", "MODE", "Playback mode: none, read, write"},
         {'Z', NULL, "playback-range", "start,end", "Playback record physical frame range" },
         {'Q', NULL, "playback-contacts", NULL, "Also record contact planes/counts while writing"},
+        {'n', NULL, "iterations", "N", "Override the scene's solver iteration count"},
+        {'u', NULL, "substeps", "N", "Override the scene's substep count"},
+        {'x', NULL, "solver", "MODE", "Override the scene's solver mode: 0=PBD, 1=XPBD"},
+        {'g', NULL, "wind", "STRENGTH", "Override the scene's wind strength (0 turns wind off)"},
+        {'k', NULL, "screenshot", "FRAME,PATH", "Render until FRAME, save it as a TGA at PATH and quit"},
         {'h', "h", "help", NULL, "Usage"}};
 
     cag_option_context context;
@@ -3277,6 +3358,30 @@ static void parseArgs(int argc, char* argv[], Options *opts) {
                     fprintf(stderr, "--playback-range must use a integer interval\n");
                     exit(-1);
                 }
+            } break;
+            case 'n':
+                g_overrideIterations = atoi(value);
+                break;
+            case 'u':
+                g_overrideSubsteps = atoi(value);
+                break;
+            case 'x':
+                g_overrideSolverMode = atoi(value) != 0 ? 1 : 0;
+                break;
+            case 'g':
+                g_overrideWind = float(atof(value));
+                break;
+            case 'k': {
+                const char* comma = strchr(value, ',');
+                if (!comma || comma == value) {
+                    fprintf(stderr, "--screenshot must use <frame>,<path>\n");
+                    exit(-1);
+                }
+                g_screenshotFrame = atoi(value);
+                g_screenshotPath = _strdup(comma + 1);
+                // a comparison shot wants the render alone
+                g_showHelp = false;
+                g_tweakPanel = false;
             } break;
         }
     }
@@ -3522,6 +3627,10 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(new EnvironmentalCloth("Env Cloth Small", 6, 6, 40, 16));
 	g_scenes.push_back(new EnvironmentalCloth("Env Cloth Large", 16, 32, 10, 3));
 	g_scenes.push_back(new FlagCloth("Flag Cloth"));
+	g_scenes.push_back(new XPBDHangingCloth("XPBD Hanging Cloth"));
+	g_scenes.push_back(new XPBDInflatableBalloon("XPBD Inflatable Balloon"));
+	g_scenes.push_back(new XPBDCantileverBeam("XPBD Cantilever Beam"));
+	g_scenes.push_back(new XPBDChain("XPBD Chain"));
 	g_scenes.push_back(new Inflatable("Inflatables"));
 	g_scenes.push_back(new ClothLayers("Cloth Layers"));
 	g_scenes.push_back(new SphereCloth("Sphere Cloth"));
